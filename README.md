@@ -40,7 +40,8 @@ runtimes/
 2. `python3 tools/promote_runtime.py --runtime-id … --approve-tag … --version …` dispatches
    `promote.yml`, which re-verifies the archive and template, opens a pull request and enables
    auto-merge.
-3. On merge, `release.yml` tags `prod/<runtime-id>/v<n>` and attaches the same archive bytes.
+3. Once `verify` is green the promotion PR is rebased by the `merge` job; the operator's command then
+   publishes `prod/<runtime-id>/v<n>` with the same archive bytes.
 
 The full rules, including withdrawal, are in `docs/PROMOTION.md`.
 
