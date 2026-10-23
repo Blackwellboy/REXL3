@@ -22,9 +22,12 @@ jobs:
           else
             base="$(git rev-list --max-parents=0 HEAD)"
           fi
-          git diff --name-only "$base" HEAD \
-            | grep -E '^runtimes/[^/]+/v[0-9]+/approval\.json$' \
-            | while read -r path; do
+          changed="$(git diff --name-only "$base" HEAD | grep -E '^runtimes/[^/]+/v[0-9]+/approval\.json$' || true)"
+          if [ -z "$changed" ]; then
+            echo "no newly promoted approval in this push"
+            exit 0
+          fi
+          printf '%s\n' "$changed" | while read -r path; do
                 dir="$(dirname "$path")"
                 id="$(basename "$(dirname "$dir")")"
                 ver="$(basename "$dir")"
