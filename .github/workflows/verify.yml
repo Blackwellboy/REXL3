@@ -1,0 +1,21 @@
+name: verify
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  verify:
+    name: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Every tree matches its approval
+        run: python3 tools/verify_runtime_tree.py --root .
+      - name: The verifier's own tests
+        run: python3 -m unittest discover -s tools -p 'test_*.py'
