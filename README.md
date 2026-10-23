@@ -11,7 +11,7 @@ its release:
 ```bash
 gh release download prod/dsv41-flash-1017-sage-1.62/v1 -R REXL3/REXL3
 tar -xzf dsv41-flash-1017-sage-1.62-1.tar.gz -C ~/dsv41 && cd ~/dsv41
-./launch.sh doctor && ./launch.sh install-deps && ./launch.sh setup && ./launch.sh start
+./launch.sh install-deps && ./launch.sh doctor && ./launch.sh setup && ./launch.sh start
 ```
 
 A bare clone of this repository verifies provenance; it does not serve. Every tree is checked on
