@@ -19,3 +19,20 @@ jobs:
         run: python3 tools/verify_runtime_tree.py --root .
       - name: The verifier's own tests
         run: python3 -m unittest discover -s tools -p 'test_*.py'
+
+  # A private repository on this plan cannot use rulesets, so auto-merge is unavailable; the merge
+  # happens here, after the gate, and only for a promotion branch.
+  merge:
+    name: merge
+    needs: verify
+    if: github.event_name == 'pull_request' && startsWith(github.head_ref, 'promote/')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Merge the promotion pull request
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh pr merge "${{ github.event.pull_request.number }}" --repo "$GITHUB_REPOSITORY" --rebase --delete-branch
