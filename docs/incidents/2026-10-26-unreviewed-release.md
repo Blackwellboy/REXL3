@@ -84,6 +84,7 @@ maintains the table; rows for PRs that are not yet merged are marked "filled at 
 | #32 | DOCS: Rewrote the production README around engine features and recipes | `51f99840` | 2026-10-27 06:51:53 |
 | #31 | DOCS: Replaced the production rules with the model-branch release process | this PR | this PR |
 | #44 | DOCS: Rewrote the agent instructions for the production release process | this PR | this PR |
+| #45 | DOCS: Corrected RED-SNOW-5.3-Flash as a separate model, not a GLM pack | this PR | this PR |
 
 Retroactive review list: every pre-restructure unreviewed merge (PRs #1-#28) plus every PR in the
 table above. The review is a maintainer approval of the change itself; where a change has since been
@@ -97,7 +98,8 @@ superseded by the restructure, a review of its replacement suffices.
   orchestrator writes them once the owner consents. CONTRIBUTING.md already carries the agent rules.
 - **Secrets for am423 to review**: `REXL3_PROMOTE_PAT` (legacy, unused) and `XAI_OAUTH_STATE` —
   decide whether to rotate, restrict or remove.
-- **Choose one GLM-5.3-Flash pack**: dev has two (`glm53-flash-2.25bpw-sm121`,
-  `redsnow-5.3-flash-sage-2.49`); the first release carries one.
+- **Choose one GLM-5.3-Flash pack** — resolved: RED-SNOW-5.3-Flash is a separate GLM-5.3-Flash
+  derivative model with its own name, Hugging Face repo and MTP head, not a second pack; no pack
+  choice is needed. The first release carries `glm53-flash-2.25bpw-sm121`.
 - **Version alignment at the RC**: set the dev workspace version to `v0.1.0` at the release candidate
   (earlier 0.1.1/0.1.2 labels were internal builds).
