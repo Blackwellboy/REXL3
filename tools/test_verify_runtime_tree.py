@@ -3,6 +3,7 @@ import copy
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 from tools import verify_runtime_tree as v
 from tools import release_evidence as e
 from tools import model_layout as m
@@ -117,6 +118,28 @@ class VerifyTest(unittest.TestCase):
     def test_discover_returns_family_model_triples(self):
         found = v.discover(Path(self.tmp.name) / 'prod')
         self.assertEqual([(f, mo, p) for f, mo, p in found], [(FAMILY, MODEL, self.tree)])
+
+    def precomputed(self, **exclude):
+        skip = {exclude.get('skip', '')}
+        return {asset['archive']: asset['members'] for asset in e.approval_assets(self.doc)
+                if asset['archive'] not in skip}
+
+    def test_verify_tree_precomputed_skips_decompression(self):
+        with patch('tools.release_evidence.inspect_archive',
+                   side_effect=AssertionError('must not run')):
+            self.assertEqual(self.verify(precomputed=self.precomputed()), [])
+
+    def test_verify_tree_partial_precomputed_falls_back_to_full_inspection(self):
+        precomputed = self.precomputed(skip=self.doc['bundle']['archive'])
+        self.assertEqual(self.verify(precomputed=precomputed), [])
+
+    def test_verify_tree_tampered_archive_fails_with_and_without_precomputed(self):
+        name = self.doc['bundle']['archive']
+        path = self.assets / FAMILY / MODEL / 'v1' / name
+        data = path.read_bytes()
+        path.write_bytes(data[:-1] + bytes([data[-1] ^ 0xFF]))
+        self.assertTrue(self.verify())
+        self.assertTrue(self.verify(precomputed=self.precomputed()))
 
 
 if __name__ == '__main__':

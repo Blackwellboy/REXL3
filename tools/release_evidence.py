@@ -588,13 +588,18 @@ def evidence_asset(approval, root):
         return asset_record(path)
 
 
-def extract_files(archive, dest, expected, *, selected=None):
+def extract_files(archive, dest, expected, *, selected=None, preverified=False):
     """Full header/content preflight and destination preflight before ANY write.
 
     Intended for exclusively owned private staging directories, not shared writable
     trees. Existing exact files are reusable; conflicts/links are never overwritten.
+
+    ``preverified`` skips only the redundant full re-derivation of the archive
+    inventory (the caller already verified the fresh compressed-transport digest
+    against the approval record); every per-file destination check still runs.
     """
-    require(inspect_archive(archive) == expected, 'archive inventory drift')
+    if not preverified:
+        require(inspect_archive(archive) == expected, 'archive inventory drift')
     names = set(expected) if selected is None else set(selected)
     require(names <= set(expected), 'unknown selected member')
     dest = checked_path(dest)
@@ -782,10 +787,15 @@ def engine_binary_files(engine, engine_dir, machine):
         require(native_elf_header(header, machine), 'native ELF/platform mismatch: ' + path)
 
 
-def bundle_identity(archive, source_asset, *, runtime_id, commit, tree, template, version, engine_binaries=None, engine_dir=None):
+def bundle_identity(archive, source_asset, *, runtime_id, commit, tree, template, version,
+                    engine_binaries=None, engine_dir=None, inventory=None, source_inventory=None):
     """Identity of a bundle. With ``engine_binaries`` the native executables are not in the archive: the approval
-    names the engine release assets that supply them and ``engine_dir`` holds those files."""
-    inv = inspect_archive(archive)
+    names the engine release assets that supply them and ``engine_dir`` holds those files.
+
+    ``inventory``/``source_inventory`` are verified approval-listed member inventories; supplying
+    them skips only redundant re-inspection, never any identity or content check.
+    """
+    inv = inventory if inventory is not None else inspect_archive(archive)
     if engine_binaries is None:
         full = inv
     else:
@@ -837,7 +847,10 @@ def bundle_identity(archive, source_asset, *, runtime_id, commit, tree, template
                 'engine release tag does not name the native engine version and commit')
         engine_binary_files(engine_binaries, engine_dir, platform['machine'])
     source_inv = {k: v for k, v in inv.items() if not k.startswith('bin/') and k != 'release.lock.json'}
-    require(inspect_archive(source_asset) == source_inv, 'runtime wrapper source asset mismatch')
+    if source_inventory is None:
+        require(inspect_archive(source_asset) == source_inv, 'runtime wrapper source asset mismatch')
+    else:
+        require(source_inventory == source_inv, 'runtime wrapper source asset mismatch')
     require(manifest.get('files') == {k: v for k, v in source_inv.items() if k != 'source.manifest.json'}, 'source inventory mismatch')
     require(manifest.get('template') == {k: template[k] for k in ('version', 'digest')}, 'manifest template mismatch')
     identities = {key: full[name]['sha256'] for key, name in (
@@ -887,13 +900,18 @@ def trusted_entry(approval_path, registry, *, allow_legacy=False, key=None):
     return approval
 
 
-def verify_assets(approval_path, *, registry, approved_templates, engine_dir=None, key=None):
+def verify_assets(approval_path, *, registry, approved_templates, engine_dir=None, key=None, precomputed=None):
     """Authenticate approval, then every archive and receipt, including engine source.
 
     ``key`` is the family/model registry key (``<family>/<model>/v<N>``) when verifying a prod tree;
     by default the runtime-id key inside the approval is used (dev-side fixture and sealer self-check).
     Consumer source validation is approval-bound integrity, not independent proof
     of private Git-object existence. Only the Git-backed sealer makes that proof.
+
+    ``precomputed`` maps an archive basename to its approval-listed member
+    inventory. A supplied inventory is honored only after this phase's fresh
+    streaming digest of the compressed transport bytes equals the approval
+    record; it skips only decompression/re-derivation, never the digest.
     """
     approval_path = checked_path(approval_path)
     root = approval_path.parent
@@ -903,9 +921,16 @@ def verify_assets(approval_path, *, registry, approved_templates, engine_dir=Non
     require(isinstance(template, dict) and approved_templates.get(template.get('version')) == template.get('digest')
             and template.get('digest') is not None, 'template not approved')
     paths = {}
+    precomputed = precomputed or {}
     for asset in approval_assets(doc):
         path = safe_file(root, asset['archive'])
-        require(asset_record(path) == asset, 'asset hash/bytes/inventory mismatch: ' + asset['archive'])
+        if asset['archive'] in precomputed:
+            require(path.stat().st_size == asset['bytes'] and sha256_file(path) == asset['sha256'],
+                    'asset hash/bytes mismatch: ' + asset['archive'])
+            require(precomputed[asset['archive']] == asset['members'],
+                    'precomputed inventory mismatch: ' + asset['archive'])
+        else:
+            require(asset_record(path) == asset, 'asset hash/bytes/inventory mismatch: ' + asset['archive'])
         paths[asset['archive']] = path
     archive, wrapper = (paths[doc[key]['archive']] for key in ('bundle', 'source_asset'))
     try:
@@ -913,13 +938,16 @@ def verify_assets(approval_path, *, registry, approved_templates, engine_dir=Non
     except ImportError:
         from corresponding_source_identity import validate_bound_archive
     validate_bound_archive(paths[doc['engine_source_asset']['archive']], commit=doc['source_commit'],
-                           tree=doc['source_tree'], asset=doc['engine_source_asset'])
+                           tree=doc['source_tree'], asset=doc['engine_source_asset'],
+                           inventory=precomputed.get(doc['engine_source_asset']['archive']))
     evidence = doc.get('evidence_asset')
     require(receipt_files(doc, root) == evidence['members'], 'evidence inventory drift')
     engine = doc.get('engine_binaries')
     require('engine_binaries' not in doc or isinstance(engine, dict), 'engine_binaries must be an object')
     profile, identities, _, _ = bundle_identity(archive, wrapper, runtime_id=doc['runtime_id'], commit=doc['source_commit'],
-        tree=doc['source_tree'], template=template, version=doc['version'], engine_binaries=engine, engine_dir=engine_dir)
+        tree=doc['source_tree'], template=template, version=doc['version'], engine_binaries=engine, engine_dir=engine_dir,
+        inventory=precomputed.get(doc['bundle']['archive']),
+        source_inventory=precomputed.get(doc['source_asset']['archive']))
     require(identities == doc.get('identities'), 'approval bundle identities mismatch')
     profiles = doc.get('profiles')
     require(isinstance(profiles, dict) and set(profiles) == set(profile['profiles']), 'receipt profile set mismatch')

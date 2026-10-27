@@ -91,9 +91,27 @@ def tag_commit(tag, repo):
     raise ValueError('annotated tag chain limit')
 
 
-def verify_approval(approval_path, approved_templates, registry, engine_dir=None, key=None):
+def verify_approval(approval_path, approved_templates, registry, engine_dir=None, key=None, precomputed=None):
     return e.verify_assets(approval_path, registry=registry, approved_templates=approved_templates,
-                           engine_dir=engine_dir, key=key)
+                           engine_dir=engine_dir, key=key, precomputed=precomputed)
+
+
+def precomputed_for_assets(approval, assets_dir):
+    """Phase-entry inventory pass-through: one cheap streaming digest per archive.
+
+    Streams SHA-256 and size of every compressed transport archive and requires
+    equality with the approval record before returning the approved member
+    inventories. Downstream phases may then skip decompression/re-derivation;
+    the fresh digest remains mandatory at every verification boundary.
+    """
+    root = e.checked_path(assets_dir)
+    precomputed = {}
+    for asset in approval_assets(approval):
+        path = e.safe_file(root, asset['archive'])
+        e.require(path.stat().st_size == asset['bytes'], 'approved asset size differ: ' + asset['archive'])
+        e.require(e.sha256_file(path) == asset['sha256'], 'approved asset bytes differ: ' + asset['archive'])
+        precomputed[asset['archive']] = asset['members']
+    return precomputed
 
 
 def engine_release_tag(approval):
@@ -292,16 +310,28 @@ def _download_release(tag, dest, *, repo, registry, approved_templates, target_c
             e.require(target.stat().st_size == source.stat().st_size and
                       e.sha256_file(target) == e.sha256_file(source), 'cached download bytes differ')
         verify_approval(dest / 'approval.json', approved_templates, registry,
-                        engine_dir=dest / 'engine' if engine_release else None, key=key)
+                        engine_dir=dest / 'engine' if engine_release else None, key=key,
+                        precomputed=precomputed_for_assets(approval, dest))
         e.require(_load_download_identity(receipt_path) == receipt, 'download identity persistence failed')
     return dest / 'approval.json'
 
 
-def extract_tree(archive, dest, approval, *, approval_path=None):
-    """Preflight ALL headers, even excluded native entries, before creating dest."""
-    members = e.inspect_archive(archive)
+def extract_tree(archive, dest, approval, *, approval_path=None, preverified=False):
+    """Preflight ALL headers, even excluded native entries, before creating dest.
+
+    ``preverified`` skips only full re-decompression/re-derivation: the fresh
+    compressed-transport digest/size still must equal the approval bundle, and
+    every per-file destination check still runs.
+    """
+    archive = e.checked_path(archive)
     e.require(approval.get('schema') == e.SCHEMA, 'v2 approval required')
-    e.require(e.asset_record(archive, members) == approval['bundle'], 'approved bundle mismatch')
+    if preverified:
+        e.require(e.sha256_file(archive) == approval['bundle']['sha256'] and
+                  Path(archive).stat().st_size == approval['bundle']['bytes'], 'approved bundle mismatch')
+        members = approval['bundle']['members']
+    else:
+        members = e.inspect_archive(archive)
+        e.require(e.asset_record(archive, members) == approval['bundle'], 'approved bundle mismatch')
     selected = {name: item for name, item in members.items() if not name.startswith('bin/') and name != 'release.lock.json'}
     e.require(selected == approval['source_asset']['members'], 'source projection mismatch')
     e.require(approval_path is not None, 'exact approval bytes required')
@@ -313,7 +343,7 @@ def extract_tree(archive, dest, approval, *, approval_path=None):
     if dest.exists():
         e.require(tree_inventory(dest) == expected, 'existing runtime tree differs')
         return
-    e.extract_files(archive, dest, members, selected=selected)
+    e.extract_files(archive, dest, members, selected=selected, preverified=preverified)
     with (dest / 'approval.json').open('xb') as stream:
         stream.write(approval_bytes)
     (dest / 'approval.json').chmod(0o644)
@@ -348,8 +378,10 @@ def prepare_promotion(family, model, version, *, approve_tag, target_commit, pro
     validate_request(runtime_id, approve_tag, version)
     e.full_hash(target_commit, e.HEX40)
     approval_path = e.safe_file(assets_dir, 'approval.json')
+    precomputed = precomputed_for_assets(e.load_json(approval_path), assets_dir)
     approval, archive = verify_approval(approval_path, approved_templates, registry,
-                                        engine_dir=Path(assets_dir) / 'engine', key=key)
+                                        engine_dir=Path(assets_dir) / 'engine', key=key,
+                                        precomputed=precomputed)
     e.require((approval['runtime_id'], approval['version'], approval['approve_tag']) ==
               (runtime_id, version, approve_tag), 'promotion identity mismatch')
     root = e.checked_path(prod_checkout)
@@ -361,13 +393,15 @@ def prepare_promotion(family, model, version, *, approve_tag, target_commit, pro
     tree = model_dir / f'v{version}'
     if tree.exists():
         problems = verify_tree(tree, approved_templates, trusted_approvals=registry,
-                               assets_dir=assets_dir, family=family, model=model)
+                               assets_dir=assets_dir, family=family, model=model,
+                               precomputed=precomputed)
         e.require(not problems, 'existing version mismatch: ' + '; '.join(problems))
         print('VERIFIED_TREE_NOOP; model branch unchanged')
         return 0
     if dry_run:
         with tempfile.TemporaryDirectory(prefix='.promotion-', dir=Path(assets_dir).parent) as tmp:
-            extract_tree(archive, Path(tmp) / 'tree', approval, approval_path=approval_path)
+            extract_tree(archive, Path(tmp) / 'tree', approval, approval_path=approval_path,
+                         preverified=True)
         print(f'VERIFIED_DRY_RUN would prepare model/{model} at {target_commit}; MODEL.json + LATEST included')
         return 0
     if meta is None:
@@ -376,7 +410,7 @@ def prepare_promotion(family, model, version, *, approve_tag, target_commit, pro
     doc = m.model_json_doc(family=family, model=model, **meta)
     m.write_or_validate_model_json(model_dir / 'MODEL.json', family=family, model=model, doc=doc)
     branch = _prepare_model_branch(root, model, target_commit)
-    extract_tree(archive, tree, approval, approval_path=approval_path)
+    extract_tree(archive, tree, approval, approval_path=approval_path, preverified=True)
     latest = model_dir / 'LATEST'
     if latest.exists():
         e.require(latest.read_text() == f'v{version}\n', 'existing LATEST differs')
@@ -385,7 +419,8 @@ def prepare_promotion(family, model, version, *, approve_tag, target_commit, pro
             stream.write(f'v{version}\n'.encode())
         latest.chmod(0o644)
     problems = verify_tree(tree, approved_templates, trusted_approvals=registry,
-                           assets_dir=assets_dir, family=family, model=model)
+                           assets_dir=assets_dir, family=family, model=model,
+                           precomputed=precomputed)
     e.require(not problems, '; '.join(problems))
     git('add', '--', str(model_dir.relative_to(root)), cwd=root)
     git('commit', '-m', f'FEAT: Promoted {model} v{version}', cwd=root)
