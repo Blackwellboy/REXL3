@@ -146,7 +146,7 @@ def immutable_releases(api, repo):
     return True
 
 
-def check_local_main(repo_root, version, token=None):
+def check_local_main(repo_root, version, token=None, api=None):
     """Validate manifest + notes + registry + trees on the checked-out main."""
     root = Path(repo_root)
     manifest_path = root / 'releases' / version / 'manifest.json'
@@ -173,7 +173,61 @@ def check_local_main(repo_root, version, token=None):
             raise ValueError(f'registry does not anchor {key} with the manifest approval hash')
         if entry.get('runtime_id') != item['runtime_id']:
             raise ValueError(f'registry runtime_id differs for {key}')
+        if item.get('carried_forward'):
+            # Carry-forward means "the family/kernel scope is untouched by the engine commits SINCE
+            # the approval was sealed" — so the qualified engine release must be an EARLIER release
+            # than the release's primary engine tag. Carrying forward from the SAME engine release
+            # this release ships is nonsensical (it would mark a model as untouched while the engine
+            # tag advanced), so refuse it before any trust check.
+            e.require(item['qualified_engine_release_tag'] != manifest['engine']['engine_release_tag'],
+                      'carried-forward model must name an earlier engine release than the release '
+                      'primary engine tag (self carry-forward is not a carry-forward)')
+            # T0 is the only prod carry-forward: the prior sealed approval travels as-is. T1/T2
+            # re-run gates on the new engine binary and re-seal a new approval at the new engine
+            # commit, so they are not manifest carry-forwards.
+            e.require(item['qualification_tier'] == 'T0',
+                      'carried-forward model must be qualification tier T0 (T1/T2 re-seal a new '
+                      'approval on the new engine build)')
+            # Trust the pinned registry bytes before reading the local approval (a tampered local
+            # approval.json must never feed the carried-forward checks).
+            e.full_hash(entry['approval_sha256'])
+            e.require(e.sha256_file(tree / 'approval.json') == entry['approval_sha256'],
+                      'local approval bytes differ from the pinned registry (untrusted local approval)')
+            approval = e.load_json(tree / 'approval.json')
+            e.full_hash(approval['source_commit'], e.HEX40)
+            # The scope diff base must be the exact commit the carried approval was sealed at.
+            e.require(item['scope_diff_base'] == approval['source_commit'],
+                      'scope_diff_base must equal the carried approval source commit')
+            engine = approval.get('engine_binaries')
+            if engine is not None:
+                e.validate_engine_binaries(engine)
+                e.require({record['release_tag'] for record in engine.values()} == {item['qualified_engine_release_tag']},
+                          'carried-forward approval names another engine release than '
+                          + item['qualified_engine_release_tag'])
+            # The qualified tag must name the approval's source commit locally (fast, offline) and,
+            # when the dev API is available, must resolve on the dev repo to that exact commit (a
+            # made-up tag that happens to carry the right suffix is still refused).
+            e.require(item['qualified_engine_release_tag'].endswith('-' + approval['source_commit'][:8]),
+                      'carried-forward qualified engine release tag does not name the approval commit')
+            if api is not None:
+                try:
+                    tag_commit = dev_tag_commit(api, item['qualified_engine_release_tag'])
+                except ValueError as err:
+                    raise ValueError('carried-forward qualified engine release tag does not name '
+                                     'the approval commit: ' + str(err)) from None
+                e.require(tag_commit == approval['source_commit'],
+                          'carried-forward qualified engine release tag does not name the approval commit')
+                _require_engine_ahead(api, approval['source_commit'], manifest['engine']['dev_commit'])
     return manifest
+
+
+def _require_engine_ahead(api, base, head):
+    """The primary engine dev commit must be ahead of the carried approval's source commit."""
+    e.full_hash(base, e.HEX40)
+    e.full_hash(head, e.HEX40)
+    compare = api.get(f'/repos/{DEV_REPO}/compare/{base}...{head}')
+    e.require(isinstance(compare, dict) and compare.get('status') == 'ahead',
+              'engine dev commit is not ahead of the carried approval source commit')
 
 
 def asset_prefix(item):
@@ -183,9 +237,26 @@ def asset_prefix(item):
     return f"{item['runtime_id']}-{version}"
 
 
-def model_assets(manifest):
-    """Expected release asset names: five per model (approval + four archives) plus engine artifacts."""
+def model_assets(manifest, repo_root=None):
+    """Expected release asset names: five per model (approval + four archives) plus engine artifacts.
+
+    Every carried-forward model's engine binaries (the assets its sealed approval names in
+    ``engine_binaries``) are also release assets: they are staged from that model's qualified
+    engine release, so a mixed-engine release publishes each model's own engine build. The
+    carried engine assets are read from the local prod tree when ``repo_root`` is given.
+    """
     names = set(manifest['engine']['artifacts'])
+    if repo_root is not None:
+        root = Path(repo_root)
+        for item in manifest['models']:
+            if item.get('carried_forward') is not True:
+                continue
+            tree = root / 'runtimes' / item['family'] / item['model'] / item['version']
+            approval = e.load_json(tree / 'approval.json')
+            engine = approval.get('engine_binaries')
+            if engine is not None:
+                e.validate_engine_binaries(engine)
+                names.update(record['asset'] for record in engine.values())
     for item in manifest['models']:
         prefix = asset_prefix(item)
         names.add(f'{prefix}-approval.json')
@@ -266,8 +337,12 @@ def download_dev_assets(api, manifest, repo_root):
     registry = e.load_json(root / 'runtimes/templates/APPROVALS.json')
     approved = e.load_json(root / 'runtimes/templates/APPROVED.json')['templates']
     work = Path(tempfile.mkdtemp(prefix='.cut-release-'))
-    engine_tag = manifest['engine']['engine_release_tag']
     for item in manifest['models']:
+        engine_tag = manifest['engine']['engine_release_tag']
+        if item.get('carried_forward'):
+            # A carried-forward model was sealed against an earlier engine release; stage the binaries
+            # from that exact release so its approval verifies against the engine it was sealed with.
+            engine_tag = item['qualified_engine_release_tag']
         tag = f"approve-{item['runtime_id']}-{int(item['version'][1:])}"
         key = m.registry_key(item['family'], item['model'], int(item['version'][1:]))
         entry = registry.get('approvals', {}).get(key)
@@ -301,6 +376,21 @@ def download_dev_assets(api, manifest, repo_root):
         e.extract_files(dest / evidence['archive'], dest, evidence['members'])
         engine_dir = stage_engine_binaries(api, doc, dest / 'engine', engine_tag)
         e.verify_assets(approval, registry=registry, approved_templates=approved, engine_dir=engine_dir, key=key)
+        # A model whose engine binaries come from an engine release publishes those binaries as
+        # release assets too. Copy the staged files into the work dir top level, deduplicated by
+        # filename+sha256: shared engine releases (two carried models from the same tag) collide on
+        # identical bytes and are uploaded once; a same-name different-bytes collision is refused.
+        if engine_dir is not None:
+            for path in sorted(engine_dir.iterdir()):
+                if not path.is_file():
+                    continue
+                target = work / path.name
+                if target.exists():
+                    e.require(e.sha256_file(target) == e.sha256_file(path),
+                              'engine asset collision in the release work dir: ' + path.name)
+                else:
+                    target.write_bytes(path.read_bytes())
+                    target.chmod(0o755)
         prefix = asset_prefix(item)
         (work / (prefix + '-approval.json')).write_bytes(approval.read_bytes())
         for kind, field in (('bundle', 'bundle'), ('source', 'source_asset'), ('engine-source', 'engine_source_asset'),
@@ -330,8 +420,8 @@ def hashlib_hex(data):
     return hashlib.sha256(data).hexdigest()
 
 
-def upload_assets(api, repo, release_id, work, manifest):
-    expected = model_assets(manifest)
+def upload_assets(api, repo, release_id, work, manifest, repo_root=None):
+    expected = model_assets(manifest, repo_root)
     uploaded = set()
     for path in sorted(work.iterdir()):
         if not path.is_file() or path.name == 'approval.json':
@@ -348,7 +438,7 @@ def upload_assets(api, repo, release_id, work, manifest):
         raise ValueError('release assets missing after upload: ' + ', '.join(sorted(missing)))
 
 
-def verify_published(api, repo, version, merge_commit, manifest, *, draft_ok=False):
+def verify_published(api, repo, version, merge_commit, manifest, *, draft_ok=False, repo_root=None):
     release = api.get(f'/repos/{repo}/releases/tags/{urllib.parse.quote(version, safe="")}')
     if release is None:
         raise ValueError('published release missing')
@@ -358,7 +448,7 @@ def verify_published(api, repo, version, merge_commit, manifest, *, draft_ok=Fal
     if ref is None or ref.get('object', {}).get('sha') != merge_commit:
         raise ValueError('tag does not point at the release PR merge commit')
     assets = {a['name']: a for a in release.get('assets', [])}
-    expected = model_assets(manifest)
+    expected = model_assets(manifest, repo_root)
     if set(assets) != expected:
         raise ValueError('published assets differ from the manifest: ' + ', '.join(sorted(set(assets) ^ expected)))
     for name, asset in assets.items():
@@ -377,15 +467,15 @@ def cut(api, repo, version, mode, repo_root='.'):
         if release is None:
             raise ValueError('no published release for tag ' + version)
         pull, merge_commit = release_pr(api, repo, version)
-        manifest = check_local_main(repo_root, version)
-        published = verify_published(api, repo, version, merge_commit, manifest)
+        manifest = check_local_main(repo_root, version, api=api)
+        published = verify_published(api, repo, version, merge_commit, manifest, repo_root=repo_root)
         print(f'VERIFIED {version} id={published["id"]} tag={version} commit={merge_commit}')
         return 0
     if tag_exists(api, repo, version):
         raise ValueError('tag already exists: ' + version)
     pull, merge_commit = release_pr(api, repo, version)
     immutable_releases(api, repo)
-    manifest = check_local_main(repo_root, version)
+    manifest = check_local_main(repo_root, version, api=api)
     if mode == 'dry':
         print(f'DRY_RUN_OK would tag {version} at {merge_commit} and publish the release with the verified dev assets')
         return 0
@@ -400,8 +490,8 @@ def cut(api, repo, version, mode, repo_root='.'):
                        {'tag_name': version, 'name': version, 'body': notes, 'draft': True, 'prerelease': False})
     if not isinstance(release, dict) or not release.get('id'):
         raise ValueError('draft release creation failed')
-    upload_assets(api, repo, release['id'], work, manifest)
-    published = verify_published(api, repo, version, merge_commit, manifest, draft_ok=True)
+    upload_assets(api, repo, release['id'], work, manifest, repo_root=repo_root)
+    published = verify_published(api, repo, version, merge_commit, manifest, draft_ok=True, repo_root=repo_root)
     api.patch(f'/repos/{repo}/releases/{release["id"]}', {'draft': False})
     print(f'PUBLISHED {version} id={published["id"]} at {merge_commit}')
     return 0

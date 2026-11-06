@@ -27,6 +27,19 @@ IDENTITY_KEYS = ('runtime_id', 'profile', 'engine_commit', 'engine_tree', 'binar
                  'profile_sha256', 'model_lock_sha256', 'release_lock_sha256',
                  'effective_profile_digest', 'effective_profile_source', 'effective_max_context', 'capabilities', 'topology',
                  'pack')
+# Engine-build keys describe which engine build produced the evidence. A receipt is
+# strict on ALL identity keys unless it explicitly declares ``carried_gates``: only a
+# gate named there may reuse raw evidence from an earlier engine build, and only when
+# that build is pinned exactly (source engine commit/tree/binary/receipt). Every other
+# identity field (model pack, profile, capabilities, topology, effective context) must
+# match exactly, carried or not. ``release_lock_sha256`` is deliberately NOT an
+# engine-build key: it binds the whole bundle inventory, so it stays strict everywhere
+# (owner decisions D40/D41/D42 option B, review N4). The provenance shape is the
+# canonical dev #238 (D41) shape, so dev-composed carried-gate records verify here.
+ENGINE_BUILD_KEYS = ('engine_commit', 'engine_tree', 'binary_sha256')
+STABLE_IDENTITY_KEYS = tuple(k for k in IDENTITY_KEYS if k not in ENGINE_BUILD_KEYS)
+CARRY_GATE_KEYS = ('source_engine_commit', 'source_engine_tree', 'source_binary_sha256',
+                   'source_receipt_sha256', 'rerun_gates')
 HEX40 = re.compile(r'[0-9a-f]{40}\Z')
 HEX64 = re.compile(r'[0-9a-f]{64}\Z')
 ID = re.compile(r'[a-z0-9][a-z0-9._-]{0,127}\Z')
@@ -150,7 +163,99 @@ def validate_identity(doc):
             and topology['ranks'] in (1, 2), 'invalid topology')
 
 
-def validate_observation(path, expected, *, choice=None):
+def identity_matches(doc, expected):
+    """Pack/profile-bound identity equality, strict on every identity key.
+
+    There is no blanket engine-build drift: a receipt is 100% strict unless it
+    declares ``carried_gates``, and even then only the declared gates may
+    differ on the engine-build fields, against an exactly pinned source build.
+    """
+    return all(doc[k] == expected[k] for k in IDENTITY_KEYS)
+
+
+def carried_gates(doc):
+    """Validate and return a receipt's declared ``carried_gates`` map, {} when absent.
+
+    A carried-gate record pins the exact earlier engine build the gate's raw
+    evidence came from (source engine commit/tree/binary and the source receipt's
+    bytes) and names the gates re-run fresh on the target build. The release lock
+    stays strict: it binds the whole bundle inventory, so a carried gate's raw
+    evidence must still match the target's release lock (D42 option B). A carried
+    gate must never also be re-run; at least one gate must stay fresh on the
+    target build, the rerun gates must be exactly the non-carried gates, and the
+    exactness/prefix-cache gates (the T2 gates that must always re-run) can never
+    be carried.
+    """
+    carried = doc.get('carried_gates')
+    if carried is None:
+        return {}
+    require(isinstance(carried, dict) and carried, 'carried_gates must be a nonempty object')
+    require(set(carried) <= set(GATES), 'carried_gates names unknown gates')
+    require(len(carried) < len(GATES),
+            'at least one gate must be fresh on the target build (all gates carried is refused)')
+    result = {}
+    rerun_sets = []
+    for gate, spec in carried.items():
+        require(isinstance(spec, dict) and set(spec) == set(CARRY_GATE_KEYS),
+                'invalid carried gate record: ' + gate)
+        full_hash(spec['source_engine_commit'], HEX40)
+        full_hash(spec['source_engine_tree'], HEX40)
+        full_hash(spec['source_binary_sha256'])
+        full_hash(spec['source_receipt_sha256'])
+        require(isinstance(spec['rerun_gates'], list) and spec['rerun_gates']
+                and all(isinstance(g, str) and g in GATES for g in spec['rerun_gates']),
+                'rerun_gates must name at least one real gate re-run on the target build')
+        require(gate not in spec['rerun_gates'],
+                'carried gate must not also be re-run on the target build: ' + gate)
+        result[gate] = spec
+        rerun_sets.append(set(spec['rerun_gates']))
+    rerun = set().union(*rerun_sets)
+    top = doc.get('rerun_gates')
+    if top is not None:
+        require(isinstance(top, list) and set(top) == rerun,
+                'top-level rerun_gates must match the carried-gate rerun declarations')
+        rerun = set(top)
+    require(not (rerun & set(carried)),
+            'carried gates must be disjoint from rerun_gates (carried gates are never re-run)')
+    require(rerun == set(GATES) - set(carried),
+            'rerun_gates must cover exactly the gates not carried on the target build')
+    require({'exactness', 'prefix_cache'} <= rerun,
+            'exactness and prefix_cache are T2 gates that must always re-run on the target build')
+    return result
+
+
+def rerun_gates(doc, carried=None):
+    """The fresh target-build gates of a receipt: the non-carried gates (union across records)."""
+    if carried is None:
+        carried = carried_gates(doc)
+    if not carried:
+        return []
+    rerun = set().union(*(set(spec['rerun_gates']) for spec in carried.values()))
+    return sorted(rerun)
+
+
+def gate_evidence_identity(raw, expected, carried_source):
+    """Raw gate-evidence identity: stable keys always match ``expected`` exactly.
+
+    Without ``carried_source`` every identity key, engine-build fields included,
+    must match. With it, the engine-build fields must name exactly the pinned
+    source build instead.
+    """
+    if not all(raw.get(k) == expected[k] for k in STABLE_IDENTITY_KEYS):
+        return False
+    if carried_source is None:
+        return all(raw.get(k) == expected[k] for k in ENGINE_BUILD_KEYS) \
+            and raw.get('release_lock_sha256') == expected['release_lock_sha256']
+    # The release lock binds the whole bundle inventory and stays strict even for a
+    # carried gate (D42 option B): only the engine commit/tree/binary may name the
+    # pinned source build.
+    return (raw.get('engine_commit') == carried_source['source_engine_commit']
+            and raw.get('engine_tree') == carried_source['source_engine_tree']
+            and raw.get('binary_sha256') == carried_source['source_binary_sha256']
+            and raw.get('release_lock_sha256') == expected['release_lock_sha256'])
+
+
+def validate_observation(path, expected, *, choice=None, allow_engine_build_drift=False):
     """Validate v1 observed bytes (or an already parsed object), never synthesize them.
 
     Pass the pinned profile choice to enforce its serving contract as well as the
@@ -158,18 +263,21 @@ def validate_observation(path, expected, *, choice=None):
     verification; this function neither launches nor probes a process.
     """
     observation = path if isinstance(path, dict) else load_json(path)
-    _validate_observation(observation, expected)
+    _validate_observation(observation, expected, allow_engine_build_drift=allow_engine_build_drift)
     if choice is not None:
         _validate_observed_profile(observation, choice)
     return observation
 
 
-def _validate_observation(observation, expected):
+def _validate_observation(observation, expected, *, allow_engine_build_drift=False):
     require(isinstance(observation, dict), 'launcher observation object required')
     require(observation.get('schema') == 'rexl3.launcher-observation.v1', 'launcher observation schema required')
     validate_identity(observation)
     validate_identity(expected)
-    require(all(observation[k] == expected[k] for k in IDENTITY_KEYS), 'observation identity drift')
+    if allow_engine_build_drift:
+        require(identity_matches(observation, expected), 'observation identity drift')
+    else:
+        require(all(observation[k] == expected[k] for k in IDENTITY_KEYS), 'observation identity drift')
     resolved = observation.get('resolved_config')
     require(isinstance(resolved, dict) and set(resolved) == {'max_context', 'capabilities', 'ranks'}
             and resolved.get('max_context') == expected['effective_max_context']
@@ -185,7 +293,9 @@ def _validate_observation(observation, expected):
         require(isinstance(rank, dict) and type(rank.get('rank')) is int and rank['rank'] not in seen, 'unique observed ranks required')
         seen.add(rank['rank'])
         for key in ('binary_sha256', 'engine_commit', 'engine_tree'):
-            require(rank.get(key) == expected[key], 'installed rank binary/source drift')
+            # A carried-forward observation (D40) may name an earlier engine build: the
+            # rank must still match the binary/source the observation itself claims.
+            require(rank.get(key) == observation[key], 'installed rank binary/source drift')
         require(all(type(rank.get(k)) is int and rank[k] > 0 for k in ('pid', 'start_time_ticks'))
                 and isinstance(rank.get('hostname'), str) and re.fullmatch(r'[A-Za-z0-9_.-]{1,253}', rank['hostname'])
                 and rank.get('ready') is True,
@@ -356,14 +466,20 @@ def _validate_observed_profile(observation, choice):
             or shared['@HTTP_PORT@'] != shared['@TP_PORT@'], 'HTTP/TP port collision')
 
 
-def validate_gate_evidence(gate, result, *, evidence_root, expected, allow_incomplete=False):
+def validate_gate_evidence(gate, result, *, evidence_root, expected, allow_incomplete=False,
+                           carried_source=None):
     """One measured-case contract for both imports and final sealing.
 
     Incomplete imports may retain failed executed cases and unexecuted skips;
     they never qualify a release. Final sealing requires every case to pass.
+    ``carried_source`` is a validated carried-gate record (see ``carried_gates``):
+    only then may the raw case summary's engine-build fields name that exactly
+    pinned earlier build instead of ``expected``; its stable identity must still
+    match ``expected`` exactly.
     """
     require(isinstance(gate, str) and bool(gate), 'gate name required')
     require(type(allow_incomplete) is bool, 'invalid incomplete policy')
+    require(carried_source is None or isinstance(carried_source, dict), 'invalid carried-source policy')
     root = checked_path(evidence_root)
     validate_identity(expected)
     require(isinstance(result, dict) and set(result) ==
@@ -395,8 +511,12 @@ def validate_gate_evidence(gate, result, *, evidence_root, expected, allow_incom
             raw = load_json(evidence)
             if isinstance(raw, dict) and raw.get('schema') == 'rexl3.gate-evidence.v1':
                 validate_identity(raw)
-                require(raw.get('gate') == gate and all(raw.get(k) == expected[k] for k in IDENTITY_KEYS),
-                        'raw evidence identity drift')
+                if carried_source is None:
+                    require(raw.get('gate') == gate and all(raw.get(k) == expected[k] for k in IDENTITY_KEYS),
+                            'raw evidence identity drift')
+                else:
+                    require(raw.get('gate') == gate and gate_evidence_identity(raw, expected, carried_source),
+                            'raw evidence identity drift')
                 require(isinstance(raw.get('cases'), list), 'raw cases required')
                 cases.extend(raw['cases'])
     require(len(cases) == executed, 'raw case count mismatch: ' + gate)
@@ -493,6 +613,14 @@ def validate_receipt(path, *, evidence_root, expected):
     Positive image/supported cases, not audio/refused cases, satisfy vision when
     capabilities.images is true. When it is false, a PASS image/refused case with a
     measured HTTP 4xx detail satisfies vision and no supported image case may exist.
+
+    Per the carried-forward contract a receipt is 100% strict on every identity
+    key unless it declares ``carried_gates``: a map of gate -> record naming the
+    exact earlier engine build that gate's raw evidence came from (source engine
+    commit/tree/binary) and the gates re-run fresh on the target build. Only the
+    declared gates may come from that pinned source build; the receipt document,
+    its identity observation and every other gate stay strictly on the shipped
+    build, and each carried record must name at least one fresh target-build gate.
     """
     path = checked_path(path)
     root = checked_path(evidence_root)
@@ -501,7 +629,8 @@ def validate_receipt(path, *, evidence_root, expected):
     require(doc.get('schema') == RECEIPT_SCHEMA, 'qualification schema required')
     validate_identity(doc)
     validate_identity(expected)
-    require(all(doc[key] == expected[key] for key in IDENTITY_KEYS), 'receipt identity drift')
+    carried = carried_gates(doc)
+    require(all(doc[k] == expected[k] for k in IDENTITY_KEYS), 'receipt identity drift')
     if expected['capabilities'].get('images') is False:
         require(doc.get('vision_exception') is not None,
                 'vision-off release requires a documented owner vision exception (granted_by, granted, expires, reason)')
@@ -513,11 +642,17 @@ def validate_receipt(path, *, evidence_root, expected):
     require(isinstance(ref, dict) and set(ref) == {'path', 'sha256'}, 'identity receipt required; naked digest refused')
     observation = safe_file(root, ref['path'])
     require(observation != path and sha256_file(observation) == full_hash(ref['sha256']), 'identity receipt hash drift')
-    validate_observation(observation, expected)
+    observed = validate_observation(observation, expected)
+    # The composed document's claimed engine identity must be its own observation's:
+    # both stay strictly on the shipped build (carried gates never move the
+    # observation), so this is a consistency guard, not a drift allowance.
+    require(all(observed[k] == doc[k] for k in ENGINE_BUILD_KEYS),
+            'receipt engine identity drift vs identity observation')
     gates = doc.get('gates')
     require(isinstance(gates, dict) and set(GATES) <= set(gates), 'missing required gates')
     for gate, result in gates.items():
-        validate_gate_evidence(gate, result, evidence_root=root, expected=expected)
+        validate_gate_evidence(gate, result, evidence_root=root, expected=expected,
+                               carried_source=carried.get(gate))
         require(all(root / relative_path(ref['path']) != path for ref in result['evidence']), 'duplicate/self evidence')
     return doc
 
@@ -1001,7 +1136,10 @@ def verify_assets(approval_path, *, registry, approved_templates, engine_dir=Non
     profiles = doc.get('profiles')
     require(isinstance(profiles, dict) and set(profiles) == set(profile['profiles']), 'receipt profile set mismatch')
     for name, selected in profiles.items():
-        require(isinstance(selected, dict) and set(selected) == {'receipt', 'identity'}, 'invalid profile approval')
+        require(isinstance(selected, dict) and set(selected) <= {'receipt', 'identity', 'carried_gates', 'rerun_gates'}
+                and {'receipt', 'identity'} <= set(selected)
+                and ('carried_gates' in selected) == ('rerun_gates' in selected),
+                'invalid profile approval')
         expected = selected['identity']
         validate_identity(expected)
         context, ranks = profile_context(profile['profiles'][name], archive)
@@ -1016,6 +1154,46 @@ def verify_assets(approval_path, *, registry, approved_templates, engine_dir=Non
         receipt = safe_file(root, ref['path'])
         require(sha256_file(receipt) == full_hash(ref['sha256']), 'receipt bytes drift')
         qualified = validate_receipt(receipt, evidence_root=root, expected=expected)
+        carried = carried_gates(qualified)
+        declared = selected.get('carried_gates')
+        declared_rerun = selected.get('rerun_gates')
+        # The seal may omit the keys or write explicit nulls (dev sealer output); both
+        # mean "no carried gates". A null/absent record on one side only, or a record
+        # that contradicts the receipt, is refused.
+        if declared is None:
+            require(not carried, 'approval omits carried_gates that the receipt declares')
+        else:
+            require(declared == carried, 'approval carried_gates record does not match the receipt')
+            require(declared_rerun == rerun_gates(qualified, carried),
+                    'approval rerun_gates record does not match the receipt')
+        if carried:
+            # Each carried gate must be tied to a registry-pinned prior approval of the
+            # SAME model (runtime_id) whose engine identity matches the carried evidence's
+            # declared source build: source commit/tree, the bundle binary and the source
+            # receipt bytes. The source must be an EARLIER build than the target (a
+            # self-carry is refused). Arbitrary source hashes and another model's approval
+            # with the same commit/tree are refused.
+            entries = (registry.get('approvals', {}) if isinstance(registry, dict) else {})
+            for gate, spec in carried.items():
+                require(spec['source_engine_commit'] != expected['engine_commit'],
+                        'carried gate source must name an earlier engine build than the target: ' + gate)
+                candidates = [entry for entry in entries.values()
+                              if isinstance(entry, dict)
+                              and entry.get('runtime_id') == doc['runtime_id']
+                              and entry.get('source_commit') == spec['source_engine_commit']
+                              and entry.get('source_tree') == spec['source_engine_tree']]
+                require(candidates,
+                        'carried gate source approval not pinned in the trusted registry: ' + gate)
+                pinned = {(entry.get('binary_sha256'),
+                           (entry.get('profiles') or {}).get(expected['profile'], {}).get('receipt', {}).get('sha256'))
+                          for entry in candidates}
+                require(len(pinned) == 1,
+                        'carried gate source approval identity mismatch: ' + gate)
+                source_binary, source_receipt = next(iter(pinned))
+                require(source_binary == spec['source_binary_sha256'],
+                        'carried gate source binary identity mismatch: ' + gate)
+                require(source_receipt == spec['source_receipt_sha256'],
+                        'carried gate source receipt identity mismatch: ' + gate)
         observation = load_json(safe_file(root, qualified['identity_receipt']['path']))
         validate_observed_profile(observation, profile['profiles'][name])
     return doc, archive

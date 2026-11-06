@@ -171,6 +171,148 @@ class ReceiptContract(unittest.TestCase):
     def test_valid_actual_files(self):
         self.assertEqual(self.validate(), self.doc)
 
+    def other_build(self):
+        return {k: ('f' * len(self.expected[k]) if k in ('engine_commit', 'engine_tree')
+                    else '9' * len(self.expected[k]) if k in ('binary_sha256', 'release_lock_sha256')
+                    else self.expected[k]) for k in self.api().IDENTITY_KEYS}
+
+    def carry_gates(self, *gates, rerun=('exactness', 'prefix_cache'), source=None):
+        """Declare ``gates`` carried from an earlier build and rewrite only their raw evidence.
+
+        The receipt document and its identity observation stay on the shipped build; only the
+        declared gates' raw case summaries move to the pinned source build (commit/tree/binary;
+        the release lock stays strict on the shipped build, D42 option B).
+        """
+        other = source or self.other_build()
+        for gate in gates:
+            p = self.root / (gate + '.json')
+            raw = json.loads(p.read_bytes())
+            for k in ('engine_commit', 'engine_tree', 'binary_sha256'):
+                raw[k] = other[k]
+            p.write_bytes(encoded(raw))
+            self.doc['gates'][gate]['evidence'][0]['sha256'] = sha(p.read_bytes())
+        self.doc['carried_gates'] = {gate: {
+            'source_engine_commit': other['engine_commit'],
+            'source_engine_tree': other['engine_tree'],
+            'source_binary_sha256': other['binary_sha256'],
+            'source_receipt_sha256': 'a' * 64,
+            'rerun_gates': list(rerun)} for gate in gates}
+
+    def test_receipt_is_strict_on_the_shipped_build_by_default(self):
+        # No carried_gates declaration: raw gate evidence from any other build is refused.
+        for gate in GATES:
+            with self.subTest(gate=gate):
+                self.setUp()
+                self.rewrite_one_gate_build(gate)
+                with self.assertRaisesRegex(ValueError, 'raw evidence identity drift'):
+                    self.validate()
+
+    def rewrite_one_gate_build(self, gate):
+        other = self.other_build()
+        p = self.root / (gate + '.json')
+        raw = json.loads(p.read_bytes())
+        for k in ('engine_commit', 'engine_tree', 'binary_sha256', 'release_lock_sha256'):
+            raw[k] = other[k]
+        p.write_bytes(encoded(raw))
+        self.doc['gates'][gate]['evidence'][0]['sha256'] = sha(p.read_bytes())
+
+    def test_carry_forward_from_earlier_engine_build_is_accepted(self):
+        # A T2 gate-scoped re-run: exactness/prefix_cache are fresh on the shipped build and the
+        # other gates carry forward from the pinned earlier build.
+        self.carry_gates(*[g for g in GATES if g not in ('exactness', 'prefix_cache')])
+        self.assertEqual(self.validate(), self.doc)
+
+    def test_a_carried_gate_release_lock_stays_strict_on_the_shipped_build(self):
+        # D42 option B (canonical dev #238 shape): the release lock binds the whole bundle
+        # inventory, so even a carried gate's raw evidence must match the shipped build's lock
+        # exactly; only commit/tree/binary may name the pinned source build.
+        self.carry_gates('doctor', rerun=tuple(g for g in GATES if g != 'doctor'))
+        p = self.root / 'doctor.json'
+        raw = json.loads(p.read_bytes())
+        raw['release_lock_sha256'] = self.other_build()['release_lock_sha256']
+        p.write_bytes(encoded(raw))
+        self.doc['gates']['doctor']['evidence'][0]['sha256'] = sha(p.read_bytes())
+        with self.assertRaisesRegex(ValueError, 'raw evidence identity drift'):
+            self.validate()
+
+    def test_carried_gates_require_a_fresh_rerun_gate_on_the_target_build(self):
+        self.carry_gates('doctor', rerun=())
+        with self.assertRaisesRegex(ValueError, 'rerun_gates must name at least one'):
+            self.validate()
+
+    def test_a_carried_gate_must_not_also_be_rerun_gate(self):
+        self.carry_gates('doctor', rerun=('doctor', 'exactness'))
+        with self.assertRaisesRegex(ValueError, 'must not also be re-run'):
+            self.validate()
+
+    def test_a_carried_gate_raw_evidence_must_name_the_declared_source_build(self):
+        # The declaration pins source build `other`; the doctor gate's raw evidence names a THIRD build.
+        third = self.other_build()
+        third['engine_commit'] = '7' * 40
+        third['engine_tree'] = '7' * 40
+        third['binary_sha256'] = '8' * 64
+        self.carry_gates('doctor', rerun=tuple(g for g in GATES if g != 'doctor'))
+        p = self.root / 'doctor.json'
+        raw = json.loads(p.read_bytes())
+        for k in ('engine_commit', 'engine_tree', 'binary_sha256', 'release_lock_sha256'):
+            raw[k] = third[k]
+        p.write_bytes(encoded(raw))
+        self.doc['gates']['doctor']['evidence'][0]['sha256'] = sha(p.read_bytes())
+        with self.assertRaisesRegex(ValueError, 'raw evidence identity drift'):
+            self.validate()
+
+    def test_an_undeclared_gate_cannot_carry_forward(self):
+        # One carried gate does not allow the other eight to drift.
+        self.carry_gates('doctor', rerun=tuple(g for g in GATES if g != 'doctor'))
+        self.rewrite_one_gate_build('vision')
+        with self.assertRaisesRegex(ValueError, 'raw evidence identity drift'):
+            self.validate()
+
+    def test_carried_gates_cannot_move_the_document_or_observation(self):
+        # The receipt document and its identity observation stay strictly on the shipped build.
+        self.carry_gates('doctor', rerun=tuple(g for g in GATES if g != 'doctor'))
+        other = self.other_build()
+        for k in ('engine_commit', 'engine_tree', 'binary_sha256', 'release_lock_sha256'):
+            self.doc[k] = other[k]
+        self.receipt.write_bytes(encoded(self.doc))
+        with self.assertRaisesRegex(ValueError, 'receipt identity drift'):
+            self.validate()
+        self.setUp()
+        self.carry_gates('doctor', rerun=tuple(g for g in GATES if g != 'doctor'))
+        path = self.root / 'identity.json'
+        obs = json.loads(path.read_bytes())
+        for k in ('engine_commit', 'engine_tree', 'binary_sha256', 'release_lock_sha256'):
+            obs[k] = other[k]
+        for rank in obs['ranks']:
+            for k in ('engine_commit', 'engine_tree', 'binary_sha256'):
+                rank[k] = other[k]
+        path.write_bytes(encoded(obs))
+        self.doc['identity_receipt']['sha256'] = sha(path.read_bytes())
+        with self.assertRaisesRegex(ValueError, 'observation identity drift'):
+            self.validate()
+
+    def test_carry_forward_pack_or_profile_drift_is_still_rejected(self):
+        # Even with a valid carried_gates declaration the pack/profile binding stays strict.
+        self.carry_gates(*[g for g in GATES if g not in ('exactness', 'prefix_cache')])
+        for field, value in (('model_lock_sha256', 'e' * 63 + '0'),
+                             ('profile_sha256', 'd' * 63 + '0'),
+                             ('runtime_id', 'other-runtime')):
+            with self.subTest(field=field):
+                saved = self.doc[field]
+                self.doc[field] = value
+                with self.assertRaisesRegex(ValueError, 'receipt identity drift'):
+                    self.validate()
+                self.doc[field] = saved
+
+    def test_carry_forward_rank_binary_must_match_the_observation(self):
+        path = self.root / 'identity.json'
+        obs = json.loads(path.read_bytes())
+        obs['ranks'][0]['binary_sha256'] = '9' * 64  # contradicts the observation's own claim
+        path.write_bytes(encoded(obs))
+        self.doc['identity_receipt']['sha256'] = sha(path.read_bytes())
+        with self.assertRaisesRegex(ValueError, 'installed rank binary/source drift'):
+            self.validate()
+
     def test_gate_truthy_strings_fail_closed(self):
         for value in ('FAIL', 'PASS', True, '15/15'):
             with self.subTest(value=value):

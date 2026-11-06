@@ -68,6 +68,7 @@ profiles; the split applies to models added after v0.1.0 and to subsequent GLM v
 | 2 | Qwen3.8-Flash-Next | `runtimes/qwen3.8/qwen3.8-flash-next/` | `qwen38-flash-next-exl3-3.05` | `qwen38-flash-next-single-262k` (one node, 262K) | `qwen_flash_next` (qwen4_exp) |
 | 3 | GLM-5.3-Flash | `runtimes/glm-5.3/glm-5.3-flash/` | `glm53-flash-2.25bpw-sm121` | `glm53-flash-single` (one node, 262K), `glm53-flash-tp2-1m` (two nodes, 1M) | `glm` |
 | 4 | Nemotron-3.5-Super-VL | `runtimes/nemotron-3.5/nemotron-3.5-super-vl/` | `nemotron35-super-vl-sage-3.85` | `nemotron35-super-vl-single-1m` (one node, 1M) | `nemotron_h_omni` |
+| 5 | DeepSeek-V4.1-Flash-1017 | `runtimes/deepseek-v4.1/deepseek-v4.1-flash-1017/` | `dsv41-flash-1017-sage-1.55` | `dsv41-single-262k` (one node, 262K) | `deepseek_v41` |
 
 `MODEL.json` (schema `rexl3.prod-model.v1`), required keys:
 
@@ -82,10 +83,12 @@ profiles; the split applies to models added after v0.1.0 and to subsequent GLM v
   does-not-fit proof.
 
 Registry (`runtimes/templates/APPROVALS.json`): entries are keyed `<family>/<model>/v<N>`; each entry
-keeps `approval_sha256`, `source_commit`, `source_tree` and adds `runtime_id`. The
-`TRUSTED_APPROVALS_SHA256` pin in `.github/workflows/verify.yml` changes in the same commit as the
-registry. Tools derive dev release tags from `runtime_id` (MODEL.json and the sealed approval must
-agree), never from folder names.
+keeps `approval_sha256`, `source_commit`, `source_tree` and adds `runtime_id`, plus the sealed
+approval's bundle binary digest `binary_sha256` and each profile's sealed receipt digest under
+`profiles/<profile>/receipt/sha256` (the latter two pin carried-gate sources to the actual approval
+identity; omitted for approvals that predate carry-forward). The `TRUSTED_APPROVALS_SHA256` pin in
+`.github/workflows/verify.yml` changes in the same commit as the registry. Tools derive dev release
+tags from `runtime_id` (MODEL.json and the sealed approval must agree), never from folder names.
 
 ## 3. Branches and PR scope
 
@@ -97,7 +100,7 @@ agree), never from folder names.
 | `release/v<X.Y.Z>` | the release PR, opened by a maintainer only | `releases/v<X.Y.Z>/**`, `CHANGELOG.md`, deleting consumed `changes/unreleased/*.md` |
 
 - A release scope is an explicitly agreed group of models listed in the release manifest. v0.1.0's
-  current manifest holds the four already-sealed models (section 2).
+  current manifest holds the five already-sealed models (section 2).
   Each `model/<model>` PR holds all the commits that make that
   model work; a later release may add a single newly validated model as a new version only after
   v0.1.0 is released, never as a release candidate for one model. No model gets its own release or
