@@ -19,7 +19,10 @@ from tools.test_release_evidence import GATES, encoded, refusal_detail, sha, wri
 
 
 class SyntheticSeal:
-    def __init__(self, root, tp2=False, images=True):
+    def __init__(self, root, tp2=False, images=True, alt_profile=None, edit_lock=None):
+        """``alt_profile``: overrides for a second single-node choice named ``alt`` (for example its own
+        ``pack`` role and ``runtime_id``), with its own receipt; its pack role is added to the lock.
+        ``edit_lock``: a callable applied to the lock's ``packs`` before anything is bound to them."""
         self.images = images
         self.root = Path(root)
         self.repo = self.root / 'repo'
@@ -85,6 +88,11 @@ class SyntheticSeal:
                 'env': {}, 'files': {},
                 'capabilities': {key: key != 'audio' for key in ('text', 'sse', 'reasoning', 'tools', 'images', 'video', 'audio', 'json_schema', 'prefix_cache')}}})
         self.profile['profiles']['single']['capabilities']['images'] = images
+        if alt_profile is not None:
+            self.profile['profiles']['alt'] = dict(copy.deepcopy(self.profile['profiles']['single']),
+                                                   argv=['--max-model-len', '262144'] + ([] if images else ['--no-vision']),
+                                                   **alt_profile)
+        tp2_role = None
         if tp2:
             from tools.test_release_profile_contract import native_tp2_fixture
             tp_choice, native_cluster, tp_observation = native_tp2_fixture(images)
@@ -92,8 +100,20 @@ class SyntheticSeal:
             cluster = encoded(native_cluster)
             tp_choice['files'] = {tp_choice['cluster_file']: sha(cluster)}
             self.profile['profiles']['tp2'] = tp_choice
+            tp2_role = tp_choice.get('pack', 'target')
         self.models = dict(schema='rexl3.model-lock.v1', packs={'target': {'repo': 'synthetic/model',
             'revision': 'a' * 40, 'fingerprint': 'sha256:' + 'b' * 64, 'files': {'config.json': {'sha256': sha(config), 'bytes': len(config)}}}})
+        self.models['packs']['draft'] = {'repo': 'synthetic/draft',
+            'revision': 'c' * 40, 'fingerprint': 'sha256:' + 'd' * 64,
+            'files': {'config.json': {'sha256': sha(config), 'bytes': len(config)}}}
+        if tp2_role and tp2_role != 'target':
+            # The synthetic lock must carry every role the adopted real TP2 choice references.
+            self.models['packs'][tp2_role] = copy.deepcopy(self.models['packs']['target'])
+        alt_role = (alt_profile or {}).get('pack')
+        if alt_role and alt_role not in self.models['packs']:
+            self.models['packs'][alt_role] = dict(copy.deepcopy(self.models['packs']['target']), repo='synthetic/alt-model')
+        if edit_lock is not None:
+            edit_lock(self.models['packs'])
         self.source = {'profile.json': encoded(self.profile), 'model.lock.json': encoded(self.models),
                        'launch.sh': (self.template / 'launch.sh').read_bytes()}
         if tp2:
@@ -131,7 +151,7 @@ class SyntheticSeal:
         caps = self.profile['profiles']['single']['capabilities']
         self.resolved = {'max_context': 1048576, 'capabilities': caps, 'ranks': [
             {'rank': 0, 'argv': ['synthetic-serve', '--max-model-len', '1048576'] + ([] if images else ['--no-vision']), 'env': {}}]}
-        identity = dict(runtime_id='synthetic-demo', profile='single', engine_commit=self.commit, engine_tree=self.tree,
+        identity = dict(runtime_id='synthetic-demo', profile='single', pack='target', engine_commit=self.commit, engine_tree=self.tree,
             binary_sha256=sha(self.bundle['bin/rexl3-serve']), profile_sha256=sha(self.source['profile.json']),
             model_lock_sha256=sha(self.source['model.lock.json']), release_lock_sha256=sha(self.bundle['release.lock.json']),
             effective_profile_digest='sha256:' + sha(json.dumps(self.resolved, sort_keys=True, separators=(',', ':')).encode()),
@@ -142,6 +162,9 @@ class SyntheticSeal:
                         **{k: identity[k] for k in ('binary_sha256', 'engine_commit', 'engine_tree')})])
         write(self.assets, 'identity.json', encoded(observation))
         self.receipt = dict(schema=e.RECEIPT_SCHEMA, **identity, gates={}, identity_receipt={'path': 'identity.json', 'sha256': sha(encoded(observation))})
+        if not images:
+            self.receipt['vision_exception'] = dict(granted_by='am423', granted='2026-10-25',
+                                                    expires='2099-12-31', reason='synthetic owner exception')
         for gate in GATES:
             case = {'name': 'synthetic', 'status': 'PASS', 'modality': 'image' if gate == 'vision' else 'system', 'expectation': 'supported'}
             extra = []
@@ -161,7 +184,9 @@ class SyntheticSeal:
         if tp2:
             second = copy.deepcopy(self.receipt)
             resolved = copy.deepcopy(tp_observation['resolved_config'])
-            second.update(profile='tp2', topology={'ranks': 2}, capabilities=tp_choice['capabilities'],
+            second.update(profile='tp2', runtime_id=tp_choice.get('runtime_id', 'synthetic-demo'),
+                          pack=tp_choice.get('pack', 'target'), topology={'ranks': 2},
+                          capabilities=tp_choice['capabilities'],
                           effective_profile_digest=tp_observation['effective_profile_digest'])
             identity = {key: second[key] for key in e.IDENTITY_KEYS}
             observed = dict(schema='rexl3.launcher-observation.v1', **identity, resolved_config=resolved,
@@ -180,7 +205,38 @@ class SyntheticSeal:
                 path = write(self.assets, 'tp2/' + gate + '.json', encoded(raw))
                 second['gates'][gate]['evidence'] = [{'path': 'tp2/' + gate + '.json', 'sha256': sha(path.read_bytes())}, *extra]
             self.kwargs['receipts'].append(write(self.assets, 'tp2/qualification.json', encoded(second)))
+        if alt_profile is not None:
+            self.kwargs['receipts'].append(self._alt_receipt())
         self.approved = {'v1': digest}
+
+    def _alt_receipt(self):
+        """The second single-node choice's receipt: its own identity (runtime_id, pack, context), observation and gates."""
+        choice = self.profile['profiles']['alt']
+        context = int(choice['argv'][choice['argv'].index('--max-model-len') + 1])
+        resolved = {'max_context': context, 'capabilities': choice['capabilities'], 'ranks': [
+            {'rank': 0, 'argv': ['synthetic-serve'] + choice['argv'], 'env': {}}]}
+        second = copy.deepcopy(self.receipt)
+        second.update(profile='alt', runtime_id=choice.get('runtime_id', 'synthetic-demo'), pack=choice.get('pack', 'target'),
+                      capabilities=choice['capabilities'], effective_max_context=context,
+                      effective_profile_digest='sha256:' + sha(json.dumps(resolved, sort_keys=True, separators=(',', ':')).encode()))
+        identity = {key: second[key] for key in e.IDENTITY_KEYS}
+        observed = dict(schema='rexl3.launcher-observation.v1', **identity, resolved_config=resolved,
+            ranks=[dict(resolved['ranks'][0], pid=124, start_time_ticks=456, hostname='synthetic-host', ready=True,
+                        **{key: identity[key] for key in ('binary_sha256', 'engine_commit', 'engine_tree')})])
+        path = write(self.assets, 'alt/identity.json', encoded(observed))
+        second['identity_receipt'] = {'path': 'alt/identity.json', 'sha256': sha(path.read_bytes())}
+        for gate in GATES:
+            raw = e.load_json(self.assets / (gate + '.json'))
+            raw.update(identity)
+            extra = []
+            if raw['cases'][0].get('result'):  # vision-off refusal detail travels with this receipt
+                detail = write(self.assets, 'alt/vision-detail.json', (self.assets / 'vision-detail.json').read_bytes())
+                extra = [{'path': 'alt/vision-detail.json', 'sha256': sha(detail.read_bytes())}]
+                raw['cases'][0]['result'] = extra[0]
+            path = write(self.assets, 'alt/' + gate + '.json', encoded(raw))
+            second['gates'][gate]['evidence'] = [{'path': 'alt/' + gate + '.json', 'sha256': sha(path.read_bytes())}, *extra]
+        self.alt_receipt_path = write(self.assets, 'alt/qualification.json', encoded(second))
+        return self.alt_receipt_path
 
     def git(self, *args):
         return subprocess.run(['git', '-C', str(self.repo), '-c', 'user.name=synthetic-test', '-c',
@@ -208,8 +264,59 @@ class SyntheticSeal:
         e.write_evidence_archive(self.assets, doc['evidence_asset']['members'], self.assets / 'evidence.tar.gz')
         path = write(self.assets, 'approval.json', encoded(doc))
         registry = {'schema': 'rexl3.approval-registry.v1', 'approvals': {'synthetic-demo/v1': {
-            'approval_sha256': sha(path.read_bytes()), 'source_commit': self.commit, 'source_tree': self.tree}}}
+            'approval_sha256': sha(path.read_bytes()), 'source_commit': self.commit, 'source_tree': self.tree,
+            'runtime_id': doc['runtime_id'], 'binary_sha256': doc['identities']['binary_sha256'],
+            'profiles': {name: {'receipt': {'sha256': selected['receipt']['sha256']}}
+                         for name, selected in doc['profiles'].items()}}}}
         return path, doc, registry
+
+    def rewrite_engine_build_gates(self, *gates, rerun=('exactness', 'prefix_cache'), source=None,
+                                   source_receipt_sha256='a' * 64):
+        """Declare ``gates`` carried from an earlier build; rewrite only their raw evidence.
+
+        The receipt document and its identity observation stay on the engine build being sealed;
+        only the declared gates' raw case summaries move to the pinned source build (a T2
+        gate-scoped re-run composition). ``source`` pins the earlier build (commit/tree/binary;
+        the release lock stays strict on the sealed build per D42 option B); it defaults to a
+        synthetic build, which is fine for refusal-path tests.
+        """
+        alt = source or {k: ('f' * len(self.receipt[k]) if k in ('engine_commit', 'engine_tree')
+                             else '9' * len(self.receipt[k]) if k in ('binary_sha256', 'release_lock_sha256')
+                             else self.receipt[k]) for k in e.IDENTITY_KEYS}
+        for gate in gates:
+            raw_path = self.assets / self.receipt['gates'][gate]['evidence'][0]['path']
+            raw = json.loads(raw_path.read_bytes())
+            for k in ('engine_commit', 'engine_tree', 'binary_sha256'):
+                raw[k] = alt[k]
+            raw_path.write_bytes(encoded(raw))
+            self.receipt['gates'][gate]['evidence'][0]['sha256'] = sha(raw_path.read_bytes())
+        self.receipt['carried_gates'] = {gate: {
+            'source_engine_commit': alt['engine_commit'],
+            'source_engine_tree': alt['engine_tree'],
+            'source_binary_sha256': alt['binary_sha256'],
+            'source_receipt_sha256': source_receipt_sha256,
+            'rerun_gates': list(rerun)} for gate in gates}
+        self.receipt_path = write(self.assets, 'qualification.json', encoded(self.receipt))
+        self.kwargs['receipts'] = [self.receipt_path]
+
+    def published_fixture_model(self, family, model):
+        """A fixture in the prod family/model layout: registry key <family>/<model>/v<N> + runtime_id."""
+        path, doc, registry = self.published_fixture()
+        version = doc['version']
+        old = f'synthetic-demo/v{version}'
+        entry = registry['approvals'].pop(old)
+        entry['runtime_id'] = doc['runtime_id']
+        registry['approvals'][f'{family}/{model}/v{version}'] = entry
+        return path, doc, registry
+
+    def model_doc(self, family, model, **overrides):
+        """A valid MODEL.json doc for the synthetic fixture."""
+        from tools import model_layout as m
+        doc = dict(schema=m.MODEL_SCHEMA, family=family, model=model, display_name='Synthetic Demo',
+                   architectures=['SyntheticForConditionalGeneration'], engine_family='synthetic',
+                   runtime_id='synthetic-demo', pack={'format': 'exl3', 'bits': '4.00'})
+        doc.update(overrides)
+        return doc
 
 
 class ApprovalTest(unittest.TestCase):
@@ -226,6 +333,157 @@ class ApprovalTest(unittest.TestCase):
         self.assertEqual(doc['engine_source_asset'], e.asset_record(self.f.engine_source_asset))
         self.assertEqual(doc['profiles']['single']['receipt']['sha256'], sha(self.f.receipt_path.read_bytes()))
         self.assertEqual(doc['identities']['profile_sha256'], sha(self.f.source['profile.json']))
+
+    def test_seal_accepts_a_carried_forward_receipt_from_an_earlier_engine_build(self):
+        # A T2 gate-scoped re-run: exactness/prefix_cache are fresh on the engine build being
+        # sealed and the other gates carry forward from a REAL earlier commit in the fixture
+        # repo (the "synthetic source" commit), declared in the receipt. The sealed approval's
+        # profile identity names the current engine commit, records the carried gates and their
+        # rerun gates, and the carried declaration travels inside the receipt so verification
+        # accepts it against a registry that pins the source approval.
+        target = [g for g in GATES if g not in ('exactness', 'prefix_cache')]
+        src_commit = self.f.git('rev-parse', 'HEAD~1')
+        src_tree = self.f.git('rev-parse', 'HEAD~1^{tree}')
+        source_receipt_sha256 = 'a' * 64
+        self.f.rewrite_engine_build_gates(*target, source={
+            'engine_commit': src_commit, 'engine_tree': src_tree,
+            'binary_sha256': '9' * 64},
+            source_receipt_sha256=source_receipt_sha256)
+        doc = self.f.seal()
+        self.assertEqual(doc['profiles']['single']['identity']['engine_commit'], self.f.commit)
+        self.assertEqual(doc['profiles']['single']['receipt']['sha256'],
+                         sha(self.f.receipt_path.read_bytes()))
+        recorded = doc['profiles']['single']['carried_gates']
+        self.assertEqual(recorded['doctor']['source_engine_commit'], src_commit)
+        self.assertEqual(doc['profiles']['single']['rerun_gates'], ['exactness', 'prefix_cache'])
+        path, _, registry = self.f.published_fixture()
+        registry['approvals']['synthetic-demo/v0'] = {
+            'approval_sha256': '7' * 64, 'source_commit': src_commit, 'source_tree': src_tree,
+            'runtime_id': doc['runtime_id'], 'binary_sha256': '9' * 64,
+            'profiles': {'single': {'receipt': {'sha256': source_receipt_sha256}}}}
+        e.verify_assets(path, registry=registry,
+                        approved_templates=self.f.approved, engine_dir=None)
+
+    def test_seal_refuses_all_nine_gates_carried_zero_fresh(self):
+        # D42 option B: a receipt whose gates are all carried (zero fresh gates on the target
+        # build) must never seal, even when every record is otherwise well-formed.
+        self.f.rewrite_engine_build_gates(*GATES, rerun=('doctor',))
+        with self.assertRaisesRegex(ValueError, 'at least one gate must be fresh'):
+            self.f.seal()
+
+    def test_seal_refuses_a_carried_gate_without_a_registry_pinned_source_approval(self):
+        # The carried record must name a registry-pinned prior approval; a fabricated source
+        # with no such approval is refused at verification, not silently accepted.
+        self.f.rewrite_engine_build_gates(*[g for g in GATES if g not in ('exactness', 'prefix_cache')])
+        path, _, registry = self.f.published_fixture()
+        with self.assertRaisesRegex(ValueError, 'not pinned in the trusted registry'):
+            e.verify_assets(path, registry=registry,
+                            approved_templates=self.f.approved, engine_dir=None)
+
+    def _carry_seal_and_registry(self, approval_sha256='7' * 64, source_receipt_sha256='a' * 64):
+        """Seal a carried-forward approval; return (path, doc, registry with a pinned source entry)."""
+        target = [g for g in GATES if g not in ('exactness', 'prefix_cache')]
+        src_commit = self.f.git('rev-parse', 'HEAD~1')
+        src_tree = self.f.git('rev-parse', 'HEAD~1^{tree}')
+        self.f.rewrite_engine_build_gates(*target, source={
+            'engine_commit': src_commit, 'engine_tree': src_tree, 'binary_sha256': '9' * 64},
+            source_receipt_sha256=source_receipt_sha256)
+        doc = self.f.seal()
+        path, _, registry = self.f.published_fixture()
+        registry['approvals']['synthetic-demo/v0'] = {
+            'approval_sha256': approval_sha256, 'source_commit': src_commit, 'source_tree': src_tree,
+            'runtime_id': doc['runtime_id'], 'binary_sha256': '9' * 64,
+            'profiles': {'single': {'receipt': {'sha256': source_receipt_sha256}}}}
+        return path, doc, registry
+
+    def test_verify_refuses_another_models_pinned_approval_with_the_same_commit_and_tree(self):
+        # Q56 (1): a foreign model's registry-pinned approval with the same production commit and
+        # tree must never authorize a carry: the source is tied to the SAME runtime_id.
+        path, _, registry = self._carry_seal_and_registry()
+        registry['approvals']['synthetic-demo/v0']['runtime_id'] = 'other-model'
+        with self.assertRaisesRegex(ValueError, 'not pinned in the trusted registry'):
+            e.verify_assets(path, registry=registry,
+                            approved_templates=self.f.approved, engine_dir=None)
+
+    def test_verify_refuses_arbitrary_source_binary_sha256(self):
+        # Q56 (1): the declared source binary must equal the registry-pinned approval's actual
+        # binary; a fabricated value is refused.
+        path, _, registry = self._carry_seal_and_registry()
+        registry['approvals']['synthetic-demo/v0']['binary_sha256'] = 'b' * 64
+        with self.assertRaisesRegex(ValueError, 'carried gate source binary identity mismatch'):
+            e.verify_assets(path, registry=registry,
+                            approved_templates=self.f.approved, engine_dir=None)
+
+    def test_verify_refuses_arbitrary_source_receipt_sha256(self):
+        # Q56 (1): the declared source receipt must equal the registry-pinned approval's actual
+        # receipt for the profile; a fabricated value is refused.
+        path, _, registry = self._carry_seal_and_registry()
+        registry['approvals']['synthetic-demo/v0']['profiles']['single']['receipt']['sha256'] = 'c' * 64
+        with self.assertRaisesRegex(ValueError, 'carried gate source receipt identity mismatch'):
+            e.verify_assets(path, registry=registry,
+                            approved_templates=self.f.approved, engine_dir=None)
+
+    def test_verify_refuses_a_registry_source_entry_without_binary_or_receipt_pins(self):
+        # The registry entry must carry the source approval's binary and receipt pins; without
+        # them a carried gate cannot be tied to the registry's actual approval identity.
+        path, _, registry = self._carry_seal_and_registry()
+        del registry['approvals']['synthetic-demo/v0']['binary_sha256']
+        with self.assertRaisesRegex(ValueError, 'carried gate source binary identity mismatch'):
+            e.verify_assets(path, registry=registry,
+                            approved_templates=self.f.approved, engine_dir=None)
+
+    def test_seal_omits_null_carried_gates_and_rerun_gates(self):
+        # Q56 (3): the sealer omits carried_gates/rerun_gates when the receipt carries none;
+        # it never writes explicit nulls into the profile record.
+        doc = self.f.seal()
+        self.assertNotIn('carried_gates', doc['profiles']['single'])
+        self.assertNotIn('rerun_gates', doc['profiles']['single'])
+
+    def test_verify_accepts_explicit_null_carried_gates_records(self):
+        # Dev main's sealer writes carried_gates/rerun_gates as null; prod verification must
+        # accept both that shape and the omitted shape.
+        path, doc, registry = self.f.published_fixture()
+        doc['profiles']['single']['carried_gates'] = None
+        doc['profiles']['single']['rerun_gates'] = None
+        path.write_bytes(encoded(doc))
+        registry['approvals']['synthetic-demo/v1']['approval_sha256'] = sha(path.read_bytes())
+        self.assertEqual(e.verify_assets(path, registry=registry, approved_templates=self.f.approved)[0], doc)
+
+    def test_verify_refuses_one_sided_null_carried_gates(self):
+        path, doc, registry = self.f.published_fixture()
+        doc['profiles']['single']['carried_gates'] = None
+        path.write_bytes(encoded(doc))
+        registry['approvals']['synthetic-demo/v1']['approval_sha256'] = sha(path.read_bytes())
+        with self.assertRaisesRegex(ValueError, 'invalid profile approval'):
+            e.verify_assets(path, registry=registry, approved_templates=self.f.approved)
+
+    def test_verify_refuses_null_carried_gates_when_the_receipt_declares_them(self):
+        path, doc, registry = self._carry_seal_and_registry()
+        doc['profiles']['single']['carried_gates'] = None
+        doc['profiles']['single']['rerun_gates'] = None
+        path.write_bytes(encoded(doc))
+        registry['approvals']['synthetic-demo/v1']['approval_sha256'] = sha(path.read_bytes())
+        with self.assertRaisesRegex(ValueError, 'approval omits carried_gates that the receipt declares'):
+            e.verify_assets(path, registry=registry, approved_templates=self.f.approved)
+
+    def test_seal_refuses_a_carried_forward_receipt_with_pack_drift(self):
+        # Even with a valid carried_gates declaration the pack/profile binding stays strict.
+        self.f.rewrite_engine_build_gates(*[g for g in GATES if g not in ('exactness', 'prefix_cache')])
+        self.f.receipt['model_lock_sha256'] = 'e' * 64
+        self.f.receipt_path = write(self.f.assets, 'qualification.json', encoded(self.f.receipt))
+        self.f.kwargs['receipts'] = [self.f.receipt_path]
+        with self.assertRaises(ValueError):
+            self.f.seal()
+
+    def test_seal_refuses_a_fully_drifted_receipt_without_a_declaration(self):
+        # Every gate's raw evidence on another build, with no carried_gates declaration, cannot
+        # seal: undeclared cross-engine-build gate evidence stays refused.
+        self.f.rewrite_engine_build_gates(*GATES, rerun=('doctor',))
+        del self.f.receipt['carried_gates']
+        self.f.receipt_path = write(self.f.assets, 'qualification.json', encoded(self.f.receipt))
+        self.f.kwargs['receipts'] = [self.f.receipt_path]
+        with self.assertRaises(ValueError):
+            self.f.seal()
 
     def test_only_real_commit_tree_pairs(self):
         for changes in ({'commit': 'f' * 40}, {'tree': 'e' * 40}, {'commit': 'HEAD'}, {'commit': self.f.tree}):
@@ -256,13 +514,27 @@ class ApprovalTest(unittest.TestCase):
             self.f.seal()
 
     def test_manifest_release_model_and_profile_drift(self):
-        for name in ('source.manifest.json', 'release.lock.json', 'profile.json', 'model.lock.json'):
+        # profile/model/source manifest are pack/source-bound: drift stays refused.
+        # release.lock.json is an engine-build key (release_lock_sha256) and must match exactly
+        # too: a receipt is strict on every identity key unless it declares carried_gates
+        # (see the scoped carry-forward tests).
+        for name in ('source.manifest.json', 'profile.json', 'model.lock.json', 'release.lock.json'):
             with self.subTest(name=name):
                 bundle = copy.deepcopy(self.f.bundle)
                 bundle[name] += b' '
                 self.f.tar(self.f.archive, bundle)
                 with self.assertRaises(ValueError):
                     self.f.seal()
+
+    def test_release_lock_drift_is_refused_without_a_carried_declaration(self):
+        # release.lock.json is engine-build identity (release_lock_sha256). A receipt is strict on
+        # every identity key by default, so a bundle whose release lock differs from the receipt is
+        # refused unless the receipt declares the gate carried from that earlier build.
+        bundle = copy.deepcopy(self.f.bundle)
+        bundle['release.lock.json'] += b' '
+        self.f.tar(self.f.archive, bundle)
+        with self.assertRaises(ValueError):
+            self.f.seal()
 
     def _reseal_with_release(self, **changes):
         release = copy.deepcopy(self.f.release)
@@ -332,6 +604,80 @@ class ApprovalTest(unittest.TestCase):
             e.verify_assets(path, registry=registry, approved_templates=self.f.approved)
 
 
+class PerProfilePackTest(unittest.TestCase):
+    """One runtime entry, two profiles: each profile pins its own lock role and runtime id (dev #159)."""
+
+    ALT = dict(pack='alt', runtime_id='synthetic-alt')
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+
+    def fixture(self, sub='alt', **kwargs):
+        root = Path(self.tmp.name) / sub
+        root.mkdir()
+        return SyntheticSeal(str(root), alt_profile=kwargs.pop('alt_profile', self.ALT), **kwargs)
+
+    def rebind(self, fixture, path, approval, registry, key='synthetic-demo/v1'):
+        path.write_bytes(encoded(approval))
+        registry['approvals'][key]['approval_sha256'] = sha(path.read_bytes())
+
+    def test_each_profile_seals_and_verifies_under_its_own_runtime_id_and_pack(self):
+        fixture = self.fixture()
+        path, approval, registry = fixture.published_fixture()
+        identities = {name: approval['profiles'][name]['identity'] for name in ('single', 'alt')}
+        self.assertEqual((identities['single']['runtime_id'], identities['single']['pack']), ('synthetic-demo', 'target'))
+        self.assertEqual((identities['alt']['runtime_id'], identities['alt']['pack']), ('synthetic-alt', 'alt'))
+        self.assertEqual(approval['runtime_id'], 'synthetic-demo')
+        self.assertEqual(e.verify_assets(path, registry=registry, approved_templates=fixture.approved)[0], approval)
+
+    def test_the_prod_family_model_registry_key_verifies_a_per_profile_approval(self):
+        fixture = self.fixture()
+        path, approval, registry = fixture.published_fixture_model('qwen3.8', 'qwen3.8-27b')
+        verified, _ = e.verify_assets(path, registry=registry, approved_templates=fixture.approved,
+                                      key='qwen3.8/qwen3.8-27b/v1')
+        self.assertEqual(verified, approval)
+
+    def test_an_identity_bound_to_the_top_level_runtime_id_or_target_pack_is_drift(self):
+        for field, value in (('runtime_id', 'synthetic-demo'), ('pack', 'target')):
+            with self.subTest(field=field):
+                fixture = self.fixture(field)
+                path, approval, registry = fixture.published_fixture()
+                approval['profiles']['alt']['identity'][field] = value
+                self.rebind(fixture, path, approval, registry)
+                with self.assertRaisesRegex(ValueError, 'approved profile identity drift'):
+                    e.verify_assets(path, registry=registry, approved_templates=fixture.approved)
+
+    def test_a_receipt_for_another_runtime_id_does_not_seal(self):
+        fixture = self.fixture()
+        receipt = e.load_json(fixture.alt_receipt_path)
+        receipt['runtime_id'] = 'synthetic-demo'
+        fixture.alt_receipt_path.write_bytes(encoded(receipt))
+        with self.assertRaises(ValueError):
+            fixture.seal()
+
+    def test_a_profile_naming_a_role_the_lock_lacks_or_the_draft_role_is_refused(self):
+        cases = {
+            'role missing from the lock': dict(alt_profile=self.ALT, edit_lock=lambda packs: packs.pop('alt')),
+            'draft role as a serving pack': dict(alt_profile=dict(pack='draft', runtime_id='synthetic-alt')),
+        }
+        for name, kwargs in cases.items():
+            with self.subTest(case=name):
+                fixture = self.fixture(name.replace(' ', '-'), **kwargs)
+                with self.assertRaisesRegex(ValueError, 'unknown pack role'):
+                    fixture.seal()
+
+    def test_a_lock_without_a_target_pack_is_refused(self):
+        fixture = self.fixture('no-target', edit_lock=lambda packs: packs.pop('target'))
+        with self.assertRaisesRegex(ValueError, 'model lock needs a target pack'):
+            fixture.seal()
+
+    def test_an_invalid_runtime_id_override_is_refused(self):
+        fixture = self.fixture('bad-id', alt_profile=dict(pack='alt', runtime_id='Not An Id'))
+        with self.assertRaisesRegex(ValueError, 'invalid runtime id override'):
+            fixture.seal()
+
+
 class VisionOffApprovalTest(unittest.TestCase):
     """Sealing and trusted verification for a release that ships with images=false."""
 
@@ -373,4 +719,27 @@ class VisionOffApprovalTest(unittest.TestCase):
         fixture.receipt['gates']['vision']['evidence'][0]['sha256'] = sha(raw_path.read_bytes())
         fixture.receipt_path.write_bytes(encoded(fixture.receipt))
         with self.assertRaisesRegex(ValueError, 'positive supported image evidence required'):
+            fixture.seal()
+
+    def test_vision_off_seal_refuses_a_missing_exception_record(self):
+        fixture = self.fixture()
+        del fixture.receipt['vision_exception']
+        fixture.receipt_path.write_bytes(encoded(fixture.receipt))
+        with self.assertRaisesRegex(ValueError, 'documented owner vision exception'):
+            fixture.seal()
+
+    def test_vision_off_seal_refuses_an_expired_exception_record(self):
+        fixture = self.fixture()
+        fixture.receipt['vision_exception'] = dict(granted_by='am423', granted='2026-10-25',
+                                                   expires='2020-01-01', reason='stale exception')
+        fixture.receipt_path.write_bytes(encoded(fixture.receipt))
+        with self.assertRaisesRegex(ValueError, 'expired on 2020-01-01'):
+            fixture.seal()
+
+    def test_vision_off_seal_refuses_a_malformed_exception_record(self):
+        fixture = self.fixture()
+        fixture.receipt['vision_exception'] = dict(granted_by='mallory', granted='2026-10-25',
+                                                   expires='2099-12-31', reason='forged')
+        fixture.receipt_path.write_bytes(encoded(fixture.receipt))
+        with self.assertRaisesRegex(ValueError, 'granted_by must be am423 or vcruz305'):
             fixture.seal()
