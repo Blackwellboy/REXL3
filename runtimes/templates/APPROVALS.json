@@ -1,5 +1,12 @@
 {
-  "approvals": {},
+  "approvals": {
+    "qwen3.8/qwen3.8-27b/v3": {
+      "approval_sha256": "d26800e692a5ac147a774da8505cd36b77a555cfb79414b2329ca923c38441de",
+      "runtime_id": "qwen38-27b-dflash2-exl3-4.00",
+      "source_commit": "799fa750f8eb7d4c45d757d9c44beeb7182b5d51",
+      "source_tree": "eac660dad193672bb6ae9861b34cd698ce1444be"
+    }
+  },
   "legacy": {},
   "schema": "rexl3.approval-registry.v1"
 }
