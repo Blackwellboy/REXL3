@@ -1,0 +1,8 @@
+HF repo: vcruz305/GLM-5.3-Flash-SAGE-REXL3-2.48bpw
+Revision: 828837bf87c4a0b4855491dcfb2bc2977a455e5d
+Manifest rows: 17
+Index weight_map entries: 150894
+Range/memory sums: ok; total data 99.41 GiB across 15 shards
+Groups accepted: 37420; refused: 135; GLM text violations: 0
+Non-uniform banks: 0; MTP keys: 7; hidden=4096 vocab=154880 eh_proj_ok=True
+Index missing: 0; index mismatches: 0; unindexed headers: 0
