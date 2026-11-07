@@ -100,4 +100,16 @@ Appendix: additional code pointers (public source)
 - NextN (MTP) policy: `crates/model/src/families/glm/spec.rs`
 - EXL3 kernels: `crates/cuda/csrc/exl3_*.cu`, `exl3_grouped.cuh`, `exl3_linear_decode.cuh`
 - Fingerprint gate: `crates/model/src/fingerprint.rs`, `crates/model/src/serve.rs`
-- CLI flags surfaced: `crates/server/src/main.rs`
+- CLI flags surfaced: `crates/server/src/main.rs` (includes `--print-fingerprints`, `--verify-pack`, and `--print-crc32` in non‑serving flags)
+
+DeepSeek validated‑pack gate behavior (public source; for completeness)
+
+- Both `afc9b5df` and `799fa750` sources include an additional condition in `check_pack_dirs` that sets the `allow_unvalidated` parameter when the target `config.json` text contains `deepseek_v41` (or `qwen3_5_moe`). This causes `check_packs` to accept such packs as unvalidated without requiring the operator flag. GLM (`glm5_next`) does not match this condition and remains subject to the validated‑pack check (or an explicit operator flag).
+
+```454:473:/tmp/tmp.qZ1hKOZ6hC/crates/model/src/serve.rs
+let is_dsv41 = std::fs::read_to_string(o.model_dir.join("config.json"))
+    .is_ok_and(|s| s.contains("deepseek_v41") || s.contains("qwen3_5_moe"));
+check_packs(&target, draft.as_ref(), o.allow_unvalidated_pack || is_dsv41)...
+```
+
+- This observation does not change our GLM plan: GLM 2.48 bpw remains gated by validated fingerprint lists or an explicit operator override. No bypass is suggested or used by this PR.
