@@ -4,13 +4,18 @@ Purpose
 
 - Determine from public v0.1.0 corresponding source whether the native engine can be legitimately adapted to support the exact pack `vcruz305/GLM-5.3-Flash-SAGE-REXL3-2.48bpw` (no sealed edits, no bypasses), and identify missing pieces if any.
 
-Public source archive (downloaded on this VM)
+Public source archives (downloaded on this VM)
 
 - Tag: `v0.1.0`
-- Asset: `rexl3-engine-0.1.0-afc9b5df-source.tar.gz`
-- Immutable URL: `https://github.com/REXL3/REXL3/releases/download/v0.1.0/rexl3-engine-0.1.0-afc9b5df-source.tar.gz`
-- SHA-256 of the gzip tarball (computed here): `ade2a05b0629cbbbc8921ee945cad18ffff1e899a3f9c83dd74b24504fe7a046`
-- Extracted `SOURCE_BUILD.md` states engine source commit `afc9b5df...` and toolchain 1.89.0.
+- General engine source: `rexl3-engine-0.1.0-afc9b5df-source.tar.gz`  
+  Immutable URL `https://github.com/REXL3/REXL3/releases/download/v0.1.0/rexl3-engine-0.1.0-afc9b5df-source.tar.gz`  
+  SHA-256 (computed here): `ade2a05b0629cbbbc8921ee945cad18ffff1e899a3f9c83dd74b24504fe7a046`  
+  `SOURCE_BUILD.md` commit: `afc9b5df...`
+- GLM pack engine source: `glm53-flash-2.25bpw-sm121-v1-engine-source.tar.gz`  
+  Immutable URL `https://github.com/REXL3/REXL3/releases/download/v0.1.0/glm53-flash-2.25bpw-sm121-v1-engine-source.tar.gz`  
+  `SOURCE_BUILD.md` commit: `799fa750...`
+
+Distinction: the GLM sealed pack was frozen on `799fa750...`; adaptation should be reasoned against that source.
 
 Evidence in source: EXL3 pack loader (mixed-K, per-group K/N, codebooks)
 
@@ -41,7 +46,7 @@ Evidence in source: pack fingerprint and validated-list gate
 - Validated pack acceptance is centralized:
   - `crates/model/src/fingerprint.rs`: `VALIDATED_TEXT` (text-only packs, includes GLM 2.25 bpw fingerprint), plus `VALIDATED_SHARDS` (pinned shard names and LFS ids + CRC-32).
   - `crates/model/src/serve.rs`: `check_packs` computes fingerprints and refuses when neither target nor (optional) draft are on the validated list; with an operator override the server marks it unvalidated. Production doctor remains strict on native versions (driver/cuBLAS).
-  - `crates/server/src/main.rs`: CLI surfaces `--print-fingerprints` and `--verify-pack`. (Not used in this PR’s preflight; present for manual fingerprint/shard pin derivation.)
+  - `crates/server/src/main.rs`: CLI surfaces `--print-fingerprints` and `--verify-pack`, and declares `--print-crc32` among non‑serving flags (prints and exits).
 
 ```text
 .../crates/model/src/fingerprint.rs
@@ -56,18 +61,12 @@ NCCL note (single node vs TP=2)
 
 - Two-node TP=2 needs NCCL (`crates/cuda/src/nccl.rs` referenced by GLM TP boot paths). The GLM single-node profile does not use NCCL. The pack sheet notes align with this.
 
-Public-source feasibility conclusion
+Feasibility vs. validated support (correction)
 
-- The public v0.1.0 engine source contains:
-  - EXL3 trellis/group scanner supporting mixed-K and codebooks, index-aware, shard-agnostic.
-  - GLM5-Next backend, including NextN/MTP speculation, P2 prefill, and GLM-specific kernels/plans.
-  - A validated-pack gate implemented in public code (`fingerprint.rs` + `serve.rs`) that can be extended with new fingerprints and pinned shards.
-- Therefore, adapting the engine to support the exact 2.48 bpw pack legitimately is feasible within the public source by:
-  1) computing the pack’s fingerprint with this engine (`rexl3-serve --print-fingerprints --model DIR`), and
-  2) adding it to `VALIDATED_TEXT` with its pinned shards under `VALIDATED_SHARDS` (file names, LFS SHA-256 ids, and CRC-32s), then
-  3) rebuilding from `SOURCE_BUILD.md`. No loader/kernel architecture change is indicated by the code.
+- The public source at `799fa750...` contains code paths to parse and plan GLM5Next EXL3 mixed‑K packs and expose fingerprint/CRC reporting. This indicates plausible code‑level compatibility.
+- It does NOT constitute qualification or production acceptance of the exact 2.48 bpw pack. Adding entries to `VALIDATED_TEXT/SHARDS` represents a maintainer’s promotion decision after passing qualification; it is not a substitute for it and is not proposed here.
 
-What is missing to complete the adaptation now
+What is missing before any consideration of validation entries
 
 - The pack fingerprint and pinned shard manifests for the exact `vcruz305/GLM-5.3-Flash-SAGE-REXL3-2.48bpw` revision (15 shards).
   - Computing these requires local access to the pack directory to run:
@@ -75,28 +74,25 @@ What is missing to complete the adaptation now
     - `rexl3-serve --print-crc32 --model <DIR>` (per-shard CRC-32; for `VALIDATED_SHARDS`)
   - On Headchef, large transfers are currently blocked; no weights are present here. Without the pack, we cannot derive the immutable fingerprint or the CRC-32 table.
 
-Non-bypass minimal implementation plan (public-source based)
+Non-bypass experimental development recognition path (no production gates altered)
 
 1) Resolve and pin the pack’s immutable HF commit SHA (operator step; no download here).
 2) On a host with the pack present (e.g., Headchef when egress is allowed or via offline copy):
    - Run `rexl3-serve --print-fingerprints --model DIR` to obtain the `sha256:...` fingerprint.
    - Run `rexl3-serve --print-crc32 --model DIR` to collect `(shard name, CRC-32)`; record LFS object SHA-256 ids from HF file listings for the same names.
-3) In this public source:
-   - Edit `crates/model/src/fingerprint.rs`:
-     - Append `(\"vcruz305/GLM-5.3-Flash-SAGE-REXL3-2.48bpw (text)\", \"sha256:<FINGERPRINT>\")` to `VALIDATED_TEXT`.
-     - Append a new block to `VALIDATED_SHARDS` keyed by `\"sha256:<FINGERPRINT>\"`, listing `(\"model-000xx-of-00015.safetensors\", \"<LFS SHA256>\", <CRC32>)` for all shards present in `model.safetensors.index.json`.
-   - Optional: add a compile-time-only unit test that asserts `validated_text("<FINGERPRINT>").is_some()` (does not require the real pack).
-4) Rebuild per `SOURCE_BUILD.md` (no GPU build required in CI here; the native GPU build step is for the operator environment).
-5) Operator-only, later: run doctor and serving lifecycle under a development profile (not part of this PR).
+3) Build a separate, reviewed development validation path (not production acceptance):
+   - CPU‑only tests (compile-time/unit): CLI non‑serving flag parsing; synthetic EXL3 header scanners (existing tests cover mixed‑K/codebooks).
+   - With local headers: header‑only scans of the exact pack (no weight data reads) to ensure no refused groups and a consistent index mapping.
+4) Only after completing the full qualification suite (exactness/speculation/prefix‑cache/vision/performance) on `799fa750...` would a maintainer-owned promotion add validated pins. That change is out of scope here.
 
 Where confidence stops
 
 - No GPU binary build or run in this VM; no model weights; no fingerprint values collected here.
 - We did not alter or propose altering production policy/doctor, and did not use or recommend any bypass flags in this PR.
 
-Notes on HF metadata availability
+Notes on HF metadata availability (without weights)
 
-- File lists for the target repo are accessible via the HF APIs/tools; immutable commit resolution should be recorded by the operator. This PR does not embed a commit id and does not assume `main`.
+- Config and file listings are accessible via public APIs; immutable commit resolution should be recorded by the operator. The index JSON is large (we saw ~15.7 MB) and our connector caps `cat` to 80KB. Fingerprints depend on safetensors headers (group trellises/codebooks), so headers must be locally accessible; config/index alone are insufficient.
 
 Appendix: additional code pointers (public source)
 
