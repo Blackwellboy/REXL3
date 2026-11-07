@@ -310,7 +310,12 @@ def main() -> None:
             parts_by_prefix.setdefault(pref, {})[part] = meta
     accepted: Dict[str, GroupMeta] = {}
     refused: Dict[str, str] = {}
+    non_group_with_parts: Dict[str, Dict[str, Any]] = {}
     for pref, parts in parts_by_prefix.items():
+        # Match engine scan behavior: skip prefixes that do not have a trellis entirely.
+        if "trellis" not in parts:
+            non_group_with_parts[pref] = parts
+            continue
         g, why = parse_group(pref, parts)
         if g:
             accepted[pref] = g
@@ -383,6 +388,25 @@ def main() -> None:
             break
 
     # 10) Totals and summary
+    # 6.1) Classification of refusals by reason and vision/text split
+    def is_vision(prefix: str) -> bool:
+        return prefix.startswith("model.visual.")
+    refused_by_reason: Dict[str, int] = {}
+    refused_samples: Dict[str, List[str]] = {}
+    refused_text_count = 0
+    refused_vision_count = 0
+    for pref, why in refused.items():
+        refused_by_reason[why] = refused_by_reason.get(why, 0) + 1
+        if is_vision(pref):
+            refused_vision_count += 1
+        else:
+            refused_text_count += 1
+        if len(refused_samples.setdefault(why, [])) < 5:
+            refused_samples[why].append(pref)
+    # Non-group (no trellis) prefixes encountered (engine would not count these as refused)
+    non_group_counts = len(non_group_with_parts)
+    non_group_samples = sorted(list(non_group_with_parts.keys()))[:5]
+
     summary = {
         "repo": args.repo,
         "rev": args.rev,
@@ -394,7 +418,13 @@ def main() -> None:
         "total_file_sizes": total_file_sizes,
         "headers_scanned": len(all_headers),
         "accepted_groups": len(accepted),
-        "refused_groups": len(refused),
+        "refused_groups": len(refused),  # true EXL3 group refusals (trellis present)
+        "refused_text_groups": refused_text_count,
+        "refused_vision_groups": refused_vision_count,
+        "refused_by_reason": refused_by_reason,
+        "refused_samples": refused_samples,
+        "non_group_prefixes_without_trellis": non_group_counts,
+        "non_group_samples": non_group_samples,
         "glm_text_bad_groups": len(glm_text_bad),
         "non_uniform_banks": non_uniform,
         "mtp_related_keys": len(mtp_keys),

@@ -53,10 +53,14 @@ Revision: 828837bf87c4a0b4855491dcfb2bc2977a455e5d
 Manifest rows: 17
 Index weight_map entries: 150894
 Range/memory sums: ok; total data 99.41 GiB across 15 shards
-Groups accepted: 37420; refused: 135; GLM text violations: 0
+Groups accepted: 37420; refused: 0; GLM text violations: 0
 Non-uniform banks: 0; MTP keys: 7; hidden=4096 vocab=154880 eh_proj_ok=True
 Index missing: 0; index mismatches: 0; unindexed headers: 0
 ```
+
+Refusal classification correction (audit logic aligned to public engine)
+- Previous audit iteration counted 135 “refused” due to prefixes that had EXL3-related tensors but no `.trellis`. The public engine’s scan ignores such prefixes (not counted as groups) unless the trellis itself is malformed. Audit logic now mirrors that: skip non‑trellis prefixes (not refusals). Current true group refusals: 0.
+- Non-group prefixes with parts (no trellis): 135 (e.g., `model.language_model.layers.11.self_attn.indexer.k_norm`, `...layers.15...k_norm`, `...layers.19...k_norm`, `...layers.23...k_norm`, `...layers.27...k_norm`). These are ordinary tensors or auxiliary parts, not EXL3 linears; loader maps/filters them via inventory, not through EXL3 group acceptance.
 
 Citations (source lines, v0.1.0 public)
 - EXL3 group acceptance (header-only parser):
