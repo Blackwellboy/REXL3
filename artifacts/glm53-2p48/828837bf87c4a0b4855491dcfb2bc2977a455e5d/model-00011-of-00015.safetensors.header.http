@@ -1,0 +1,15 @@
+content-type: application/octet-stream
+accept-ranges: bytes
+content-disposition: inline; filename*=UTF-8''model-00011-of-00015.safetensors; filename="model-00011-of-00015.safetensors";
+etag: "e6a731b6955ab17f8755f8490ae448db4ae85178af1696db1b9b6527f4a88817"
+content-security-policy: default-src 'none'; media-src 'self'; sandbox allow-same-origin
+access-control-allow-headers: Content-Range, Content-Type, Content-Disposition, ETag
+access-control-expose-headers: *
+content-length: 1363712
+content-range: bytes 8-1363719/6746521036
+vary: origin, access-control-request-method, access-control-request-headers
+access-control-allow-origin: *
+x-request-id: 01M6V6WWAZ7JWFDYTKYFZWKG69
+x-hf-cdn-pop: aws-us-east-1
+date: Sat, 07 Nov 2026 14:34:13 GMT
+connection: close

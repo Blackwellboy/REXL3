@@ -1,0 +1,22 @@
+{
+  "repo": "vcruz305/GLM-5.3-Flash-SAGE-REXL3-2.48bpw",
+  "rev": "828837bf87c4a0b4855491dcfb2bc2977a455e5d",
+  "artifact_dir": "artifacts/glm53-2p48/828837bf87c4a0b4855491dcfb2bc2977a455e5d",
+  "manifest_entries": 17,
+  "index_weight_map_entries": 150894,
+  "range_meta_ok": true,
+  "total_calc_data_bytes": 106741268008,
+  "total_file_sizes": 106760903784,
+  "headers_scanned": 150894,
+  "accepted_groups": 37420,
+  "refused_groups": 135,
+  "glm_text_bad_groups": 0,
+  "non_uniform_banks": {},
+  "mtp_related_keys": 7,
+  "hidden": 4096,
+  "vocab": 154880,
+  "eh_proj_dims_ok": true,
+  "index_missing_names": 0,
+  "index_mismatch": 0,
+  "unindexed_header_names": 0
+}

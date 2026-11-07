@@ -1,0 +1,122 @@
+{
+  "model-00001-of-00015.safetensors": {
+    "file_size": 2593962376,
+    "header_len": 14008,
+    "calc_data_bytes": 2593948360,
+    "data_len_reported": 2593948360,
+    "calc_matches_reported": true,
+    "num_tensors": 117
+  },
+  "model-00002-of-00015.safetensors": {
+    "file_size": 8608848896,
+    "header_len": 1355048,
+    "calc_data_bytes": 8607493840,
+    "data_len_reported": 8607493840,
+    "calc_matches_reported": true,
+    "num_tensors": 10497
+  },
+  "model-00003-of-00015.safetensors": {
+    "file_size": 6760209248,
+    "header_len": 1354888,
+    "calc_data_bytes": 6758854352,
+    "data_len_reported": 6758854352,
+    "calc_matches_reported": true,
+    "num_tensors": 10497
+  },
+  "model-00004-of-00015.safetensors": {
+    "file_size": 8270165912,
+    "header_len": 1362112,
+    "calc_data_bytes": 8268803792,
+    "data_len_reported": 8268803792,
+    "calc_matches_reported": true,
+    "num_tensors": 10497
+  },
+  "model-00005-of-00015.safetensors": {
+    "file_size": 10527406020,
+    "header_len": 1827840,
+    "calc_data_bytes": 10525578172,
+    "data_len_reported": 10525578172,
+    "calc_matches_reported": true,
+    "num_tensors": 13992
+  },
+  "model-00006-of-00015.safetensors": {
+    "file_size": 6733938124,
+    "header_len": 1363712,
+    "calc_data_bytes": 6732574404,
+    "data_len_reported": 6732574404,
+    "calc_matches_reported": true,
+    "num_tensors": 10485
+  },
+  "model-00007-of-00015.safetensors": {
+    "file_size": 6760219744,
+    "header_len": 1365384,
+    "calc_data_bytes": 6758854352,
+    "data_len_reported": 6758854352,
+    "calc_matches_reported": true,
+    "num_tensors": 10497
+  },
+  "model-00008-of-00015.safetensors": {
+    "file_size": 6772802656,
+    "header_len": 1365384,
+    "calc_data_bytes": 6771437264,
+    "data_len_reported": 6771437264,
+    "calc_matches_reported": true,
+    "num_tensors": 10497
+  },
+  "model-00009-of-00015.safetensors": {
+    "file_size": 9004876580,
+    "header_len": 1830752,
+    "calc_data_bytes": 9003045820,
+    "data_len_reported": 9003045820,
+    "calc_matches_reported": true,
+    "num_tensors": 13992
+  },
+  "model-00010-of-00015.safetensors": {
+    "file_size": 6760219744,
+    "header_len": 1365384,
+    "calc_data_bytes": 6758854352,
+    "data_len_reported": 6758854352,
+    "calc_matches_reported": true,
+    "num_tensors": 10497
+  },
+  "model-00011-of-00015.safetensors": {
+    "file_size": 6746521036,
+    "header_len": 1363712,
+    "calc_data_bytes": 6745157316,
+    "data_len_reported": 6745157316,
+    "calc_matches_reported": true,
+    "num_tensors": 10485
+  },
+  "model-00012-of-00015.safetensors": {
+    "file_size": 6760219744,
+    "header_len": 1365384,
+    "calc_data_bytes": 6758854352,
+    "data_len_reported": 6758854352,
+    "calc_matches_reported": true,
+    "num_tensors": 10497
+  },
+  "model-00013-of-00015.safetensors": {
+    "file_size": 9041576740,
+    "header_len": 1830752,
+    "calc_data_bytes": 9039745980,
+    "data_len_reported": 9039745980,
+    "calc_matches_reported": true,
+    "num_tensors": 13992
+  },
+  "model-00014-of-00015.safetensors": {
+    "file_size": 7400899680,
+    "header_len": 1365384,
+    "calc_data_bytes": 7399534288,
+    "data_len_reported": 7399534288,
+    "calc_matches_reported": true,
+    "num_tensors": 10497
+  },
+  "model-00015-of-00015.safetensors": {
+    "file_size": 4019037284,
+    "header_len": 505912,
+    "calc_data_bytes": 4018531364,
+    "data_len_reported": 4018531364,
+    "calc_matches_reported": true,
+    "num_tensors": 3855
+  }
+}
