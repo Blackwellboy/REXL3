@@ -331,13 +331,16 @@ single download step; actions are pinned by full commit SHA.
 
 ## Reporting a problem
 
+Before opening a new issue, search existing open and closed issues (`gh issue list -R REXL3/REXL3 --state all`)
+and check the model's `KNOWN_ISSUES.md`; if an open issue already covers the same symptom, add your findings,
+diagnostics, or proposed patch as a comment on that issue instead of opening a duplicate.
 Open an issue in this repository (Issues, New issue, **Tester report**). The form asks for the release
 tag, the bundle asset name and its `bundle.sha256`, the profile, the server's `rexl3 event=start` log
 line, the exact command with its exit code and error token, the request and response for a bad answer,
 the output of `./launch.sh diagnostics` (an allow-list report — read it before pasting), and what you
 expected.
-Issues are visible to the maintainers and every invited tester; never paste raw logs, prompts,
-credentials or tokens. Report a security problem via [SECURITY.md](SECURITY.md), never as an issue.
+Issues are public: anyone can read them, and only invited testers and the maintainers can open or
+comment on them. Never paste raw logs, prompts, credentials or tokens. Report a security problem via [SECURITY.md](SECURITY.md), never as an issue.
 
 ## Licence and corresponding source
 
