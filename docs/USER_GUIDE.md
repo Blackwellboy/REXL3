@@ -9,14 +9,14 @@ size, which request switches it honours, its measured behaviour) is in that reci
 `profile.json`, `KNOWN_ISSUES.md` and `docs/` (inside the bundle you extract). Read this guide once,
 then keep the recipe's `KNOWN_ISSUES.md` beside you.
 
-> **Status: v0.1.0 is released and v0.1.1 is being prepared.** The GitHub releases page names the
+> **Status: v0.1.1 is the latest release; v0.1.0 remains available.** The GitHub releases page names the
 > exact tags; use the tag of the release that holds your model.
 
 ## 1. How the documentation fits together
 
 | Document | What it is for | Authority |
 | --- | --- | --- |
-| [README](../README.md) | Front page: what REXL3 is, the first-release models, the shortest path | What the project is |
+| [README](../README.md) | Front page: what REXL3 is, the released models, the shortest path | What the project is |
 | This guide | The whole journey: install, API cookbook, operations, troubleshooting | How to run any recipe |
 | [docs/PROMOTION.md](PROMOTION.md) | How a recipe is sealed and promoted into this repository | Maintainers |
 | [CONTRIBUTING.md](../CONTRIBUTING.md) | Rules for changing this repository | Contributors |
@@ -26,11 +26,11 @@ then keep the recipe's `KNOWN_ISSUES.md` beside you.
 | [SECURITY](../SECURITY.md) | Reporting a vulnerability, the threat model | Security |
 
 If this guide and the bundle disagree, follow the bundle and tell the maintainers (section 11).
-While this repository is private, the release must be downloaded with the GitHub CLI (`gh`), not with
-`curl`; the bundle's own examples may show `curl` against the public release URL.
+The examples in this guide download with the GitHub CLI (`gh`); the bundle's own examples use `curl`
+against the public release URL.
 
 Conventions: commands are for Bash on the GB10 host unless said otherwise. `$TAG` is a release tag
-such as `v0.1.0`. A line starting with `#` inside a code block is a comment.
+such as `v0.1.1`. A line starting with `#` inside a code block is a comment.
 
 ## 2. Before you start
 
@@ -44,7 +44,7 @@ such as `v0.1.0`. A line starting with `#` inside a code block is a comment.
 | Privileges | A normal user with `sudo` available **for system packages only**. Never run `./launch.sh start` or the whole launcher as root; it refuses. |
 | System services | systemd 255 or newer with cgroup v2 and a working login user manager (the installer checks). |
 | Network | Outbound HTTPS to GitHub (the release) and Hugging Face (the model), and to the Ubuntu and NVIDIA package repositories. |
-| GitHub access | While the repository is private you need an invitation and the GitHub CLI, `gh`, logged in (`gh auth login`, then `gh auth status`). Without access the release cannot be downloaded. |
+| GitHub access | The repository and its releases are public. The examples here use the GitHub CLI, `gh`, logged in (`gh auth login`, then `gh auth status`). Opening or commenting on an issue needs a tester invitation (section 11). |
 | Time | Plan for the model download (size is in the recipe docs) and a first start that verifies every model file. The launcher gives no fixed start-up time because it depends on disk and network. |
 
 ### 2.2 What the launcher will and will not do
@@ -110,7 +110,7 @@ If a recipe has more than one profile, add `--profile <name>` to `setup`, `start
 
 ### 4.1 Choose a release tag
 
-The [README](../README.md) lists the first-release models and their status. The GitHub releases page
+The [README](../README.md) lists the released models and their status. The GitHub releases page
 has the exact tags; the first was `v0.1.0`. Releases are immutable: a fix is a new version, never
 an edit. Pick the version a maintainer told you to test.
 
@@ -148,10 +148,12 @@ sha256sum "$BUNDLE"; stat -c %s "$BUNDLE"
 
 The hashes and the sizes must be identical. If they differ, **stop**: do not extract or run the
 archive, download it again from the release, and if it still differs report it (section 11). The
-bundle's `README.md`, section "Download and verify before extracting", has a stricter
+bundle's `README.md`, section "Download and verify before extracting", shows a stricter
 verify-and-extract program (it rejects links, path traversal and duplicates before writing anything).
-It expects the two files under the local names `approval.json` and the approval's `bundle.archive`,
-so to use it, copy the two downloaded assets to those names in a fresh directory first.
+As sealed it cannot be used with this release, even after renaming the downloaded files: it expects
+assets named `approval.json` and the approval's `bundle.archive`, and it checks for approval schema
+version 1, while released approvals are version 2. Use the commands in this section instead; the
+[README](../README.md)'s "Install and run a recipe" has the same verify steps.
 
 ### 4.4 Extract
 
@@ -194,6 +196,9 @@ the native engine binary, whether it ships in the bundle or is placed from a rel
 `approval.json`). It does **not** prove there is enough disk space, that the GPU is idle, that the port
 is free, or that inference works; those are checked later with their own error tokens (section 8).
 
+If `install-deps` or `doctor` exits 20 on the NVIDIA driver packages, read section 8 before changing
+anything on the host: it is a known issue of the release on an updated Ubuntu 24.04 host.
+
 ### 4.6 Profiles and print-command
 
 A recipe can offer several profiles (for example different context windows or topologies). The
@@ -219,7 +224,8 @@ the site format. Do not edit a sealed profile to change its flags.
 model, which is why `--accept-model-download` is separate. `setup` shows the remaining bytes and the
 destination, fetches only the locked repository revision and files, and verifies every file's size and
 hash. An interrupted download resumes at the same pin. Models live under
-`${XDG_DATA_HOME:-$HOME/.local/share}/rexl3/models/`; nothing is stored in the bundle. If you already
+`${XDG_DATA_HOME:-$HOME/.local/share}/rexl3/<runtime-id>/models/<role>/<revision>/` (`<role>` is `target`
+or `draft`); nothing is stored in the bundle. If you already
 have the model files, a single-node profile may allow an existing directory through a site file (see
 the bundle's `docs/SETUP.md`); the launcher then verifies it read-only and never repairs or downloads
 into it.
@@ -361,7 +367,7 @@ Recipes that accept images take them inline, as base64 in a data URI, in a messa
 Remote image URLs are not fetched by default. The bundle's own examples use a 256 by 256 pixel image;
 much smaller test images have been misread, so do not judge image support from a tiny picture. The
 recipe's `KNOWN_ISSUES.md` says whether images are supported. A recipe started without vision refuses
-image parts. Video is not a capability of any first-release profile (`capabilities.video` is `false`
+image parts. Video is not a capability of any released profile (`capabilities.video` is `false`
 in every `profile.json`), so treat it as unsupported; audio is refused by every recipe today.
 
 ### 5.8 Concurrency
@@ -454,6 +460,7 @@ launcher prints an error **token** in capitals; the table lists the common ones 
 | --- | --- | --- |
 | `UNSUPPORTED_OS`, `UNSUPPORTED_ARCH`, `UNSUPPORTED_GPU` | Not Ubuntu 24.04 ARM64 on a GB10 | Use a supported host |
 | `RUN_AS_NORMAL_USER` | You ran `start` as root or with `sudo` | Run as your normal user; only the installer uses `sudo` |
+| `install-deps` or `doctor` exits 20 on `libnvidia-compute-580` or `nvidia-utils-580` | The recipes pin the NVIDIA driver packages at exactly `580.173.02-0ubuntu0.24.04.1`; a host whose packages have moved past that build is refused, and `setup` and `start` refuse with it | See "Known issues" in the [v0.1.1 release notes](../releases/v0.1.1/NOTES.md): they give a single-node workaround (it skips the launcher's checks and is outside the release's qualification evidence); two-node profiles have none in this release |
 | `MODEL_DOWNLOAD_APPROVAL_REQUIRED` | The model is missing and you did not consent | Review the size, then add `--accept-model-download` |
 | `INSUFFICIENT_MODEL_DISK` | Not enough free disk for the remaining download | Free space, then rerun `setup`; partial files already count |
 | `MODEL_DOWNLOAD_FAILED` | Network or access problem | Restore access, rerun `setup`: it resumes at the same pin |
@@ -478,7 +485,7 @@ launcher prints an error **token** in capitals; the table lists the common ones 
 - The two-node profiles (`glm53-flash-tp2-1m`, `redsnow-tp2-512k` and `dsv41-tp2-1m`) listen on the
   leader node's network address, not on localhost, and the server has no API key and no request log.
   Run them only on a private, trusted network, or behind a firewall or an SSH tunnel. An API key
-  option is planned for the next release.
+  option is planned for a later release.
 - Prompts and answers are held in memory and written to the server log only as the log shows; do not
   paste raw logs, prompts, environment dumps or credentials into a report. `diagnostics` is an
   allow-list for this reason, but read it before you share it.
@@ -516,7 +523,7 @@ tracked belongs in an issue. A report needs:
    `finish_reason`.
 6. What you checked and what you could not check on your machine.
 
-If you are proposing a fix, new feature, drafter binding, kernel speedup, or runtime improvement rather than reporting a failure, use the **Tester finding, fix, or feature proof** template (`.github/ISSUE_TEMPLATE/tester-fix-or-improvement.yml`, title prefix `[finding] `). **Do not open bare feature requests:** build your change against this repository's engine source tree (`crates/`, `Cargo.toml`, `SOURCE_BUILD.md`), validate it on your own setup at the profile's full supported context (`262,144` for `tp1` or `1,048,576` for `tp2`), and include the complete `git diff` plus measured before/after validation evidence so the maintainers can test it in `REXL3/REXL3-dev` and promote it to `REXL3/REXL3`.
+If you are proposing a fix, new feature, drafter binding, kernel speedup, or runtime improvement rather than reporting a failure, use the **Tester finding, fix, or feature proof** template (`.github/ISSUE_TEMPLATE/tester-fix-or-improvement.yml`, title prefix `[finding] `). **Do not open bare feature requests:** build your change against this repository's engine source tree (`crates/`, `Cargo.toml`, `SOURCE_BUILD.md`), validate it on your own setup at the profile's full context window (`--max-model-len` in its sealed `profile.json`: 262,144, 524,288 or 1,048,576 depending on the profile), and include the complete `git diff` plus measured before/after validation evidence so the maintainers can test it in `REXL3/REXL3-dev` and promote it to `REXL3/REXL3`.
 
 Do not include raw logs, prompts or responses you do not want shared, credentials, or SSH keys. For a
 security problem follow [SECURITY](../SECURITY.md) instead: never an issue and never a chat channel.
@@ -526,7 +533,7 @@ security problem follow [SECURITY](../SECURITY.md) instead: never an issue and n
 | Term | Meaning |
 | --- | --- |
 | Recipe | A sealed, hash-pinned runtime for one model under `runtimes/<family>/<model>/`: profile, launcher, locks, approval |
-| Bundle | The runnable archive of a recipe, including the native binaries (a release asset) |
+| Bundle | The runnable archive of a recipe (a release asset). It ships without the engine binaries, which are separate assets of the same release named in the approval's `engine_binaries` (section 4.4) |
 | Model folder | The `runtimes/<family>/<model>/` tree; `<model>` never carries a quantization format or bit width |
 | Profile | One approved way to run the recipe: window, slots, topology, flags |
 | Slot | One request being processed at the same time |

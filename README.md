@@ -25,11 +25,11 @@ Engine development, model validation and sealing happen in the development repos
 Rules for contributing are in
 [CONTRIBUTING.md](CONTRIBUTING.md); how a recipe gets here is in [docs/PROMOTION.md](docs/PROMOTION.md).
 
-> **Status: v0.1.0 is released; v0.1.1 is being prepared.** The v0.1.0 models are published as
-> assets of the [v0.1.0 release](https://github.com/REXL3/REXL3/releases/tag/v0.1.0), built from
-> engine commit `afc9b5dfb69d070a306ffe6696d9b4f96db4ddec`. The v0.1.1 models below are sealed on
-> engine commit `75031112ba1279b6da97d5604be5160648cc9f2c` and are published as assets of the
-> v0.1.1 release when it is tagged; until then, install from v0.1.0.
+> **Status: v0.1.1 is released** (2026-11-12). The v0.1.1 models below are published as assets of
+> the [v0.1.1 release](https://github.com/REXL3/REXL3/releases/tag/v0.1.1), built from engine
+> commit `75031112ba1279b6da97d5604be5160648cc9f2c`. The
+> [v0.1.0 release](https://github.com/REXL3/REXL3/releases/tag/v0.1.0), built from engine commit
+> `afc9b5dfb69d070a306ffe6696d9b4f96db4ddec`, holds the earlier versions.
 
 ## v0.1.1 models
 
@@ -43,6 +43,7 @@ Rules for contributing are in
 | Nemotron-3.5-Super-VL | v2 | `nemotron_h_omni` | `nemotron35-super-vl-sage-3.85` | `nemotron35-super-vl-single-1m`: 1,048,576 tokens, one node, port 9100 | on | [nemotron-3.5-super-vl](docs/packs/nemotron-3.5-super-vl.md) |
 | MiniCPM-V-4.7-35B-A3B | v1 | `minicpmv4_7` | `minicpmv47-35b-a3b-rexl3-sage-6.08` | `minicpmv47-single-262k`: 262,144 tokens, one node, port 8889 | on | [minicpm-v-4.7-35b-a3b](docs/packs/minicpm-v-4.7-35b-a3b.md) |
 | DeepSeek-V4.1-Flash-1017, two nodes | v1 | `deepseek_v41` (family `deepseek-v4.1`) | `dsv41-flash-1017-sage-rexl3-1.55` | `dsv41-tp2-1m`: 1,048,576 tokens, two nodes, port 8940 | off | [deepseek-v4.1-flash-1017-tp2](docs/packs/deepseek-v4.1-flash-1017-tp2.md) |
+| Ling-3.1-Flash-1019 | v1 | `bailing_moe_v3` | `ling31-flash-1019-sage-1.51` | `ling31-single-262k`: 262,144 tokens, one node, port 8889 | off | [ling-3.1-flash-1019](docs/packs/ling-3.1-flash-1019.md) |
 
 ## First release (v0.1.0) models
 
@@ -67,8 +68,8 @@ or port can differ from the table above. A recipe with vision off says so in its
 **The `tp2` two-node profiles** (GLM-5.3-Flash's `glm53-flash-tp2-1m`, RED-SNOW-5.3-Flash's
 `redsnow-tp2-512k` and DeepSeek-V4.1-Flash-1017's `dsv41-tp2-1m`) listen on the leader node's network
 address, not on localhost, and the server has no API key and no request log. Run them only on a
-private, trusted network, or behind a firewall or an SSH tunnel. An API key option is planned for the
-next release.
+private, trusted network, or behind a firewall or an SSH tunnel. An API key option is planned for a
+later release.
 
 ## Supported hardware
 
@@ -152,6 +153,12 @@ done
 ./launch.sh --yes setup --accept-model-download   # downloads and verifies the pinned model
 ./launch.sh --yes start                       # foreground; verified READY before serving
 ```
+
+If `install-deps` or `doctor` exits 20 on the NVIDIA driver packages, the host's packages have moved
+past the build the recipes pin (`580.173.02-0ubuntu0.24.04.1`). This is a known issue of the release:
+see "Known issues" in the [v0.1.1 release notes](releases/v0.1.1/NOTES.md) and section 8 of the
+[user guide](docs/USER_GUIDE.md). The notes give a single-node workaround; two-node profiles have none
+in this release.
 
 Run the launcher as your normal user, never with `sudo`. `--yes` approves routine package
 installation only; the model download needs the separate `--accept-model-download` consent. From a
@@ -290,7 +297,7 @@ Image input is inline base64 in a data URI (`image_url` part). Remote HTTPS imag
 under an owner vision exception; see the capability contract below); `--max-image-tokens` bounds image tokens. Towers exist for Qwen, GLM
 (glm5_next, 24-layer), MiniCPM-V-4.7 and Nemotron Omni; the Nemotron engine also accepts video as a
 frame list (`--max-video-frames`, `--max-video-tokens`, `--video-pruning-rate`, `--video-evs-strict`,
-`--no-video`), but no first-release profile declares video (`capabilities.video` is `false` in every
+`--no-video`), but no released profile declares video (`capabilities.video` is `false` in every
 profile). Audio is refused by every family.
 
 ### Reasoning controls
@@ -375,7 +382,8 @@ Always use the structured templates in `.github/ISSUE_TEMPLATE/` (including when
   **no bare feature requests.** Because this repository ships the complete engine source tree (`crates/`,
   `Cargo.toml`, `SOURCE_BUILD.md`), any proposed feature, drafter integration, kernel optimization, or
   runtime improvement must include a **working `git diff` that you built, tested, and validated on your
-  own setup at the profile's full supported context (`262,144` for `tp1` / `1,048,576` for `tp2`)**,
+  own setup at the profile's full context window (`--max-model-len` in its sealed `profile.json`:
+  262,144, 524,288 or 1,048,576 depending on the profile)**,
   together with exactness checks (`drafted == serial`) and measured before/after numbers so the
   maintainers can test it in `REXL3/REXL3-dev`, validate it, and promote it to `REXL3/REXL3`.
 
