@@ -106,10 +106,16 @@ class FakeApi(c.Api):
                 if tag == 'engine-v0.1.2-4208d848':
                     return self.fixtures['engine_release']
                 return self.fixtures['dev_release']
-            return self.releases.get(tag)
+            release = self.releases.get(tag)
+            # GitHub's tag endpoint returns 404 (surfaced by Api.get as None) while a release is a draft.
+            return None if release is not None and release.get('draft') else release
         if '/releases/assets/' in path:
             asset_id = int(path.rsplit('/', 1)[1])
             return self.fixtures['assets'][asset_id]
+        release_prefix = f'/repos/{REPO}/releases/'
+        if path.startswith(release_prefix) and path[len(release_prefix):].isdigit():
+            release_id = int(path[len(release_prefix):])
+            return next((release for release in self.releases.values() if release['id'] == release_id), None)
         if '/immutable-releases' in path:
             if not self.immutable:
                 raise ValueError('GitHub API 403')
@@ -297,6 +303,42 @@ class PublishTest(CutFixture):
         expected = c.model_assets(self.manifest)
         self.assertEqual({a['name'] for a in release['assets']}, expected)
         self.assertEqual(len(api.uploads), len(expected))
+
+    def test_publish_verifies_the_draft_release_by_id_instead_of_tag(self):
+        api = self.api()
+        original_get = api.get
+        draft_id_gets = []
+
+        def get(path, **kwargs):
+            if VERSION in api.releases:
+                release_id = api.releases[VERSION]['id']
+                if path == f'/repos/{REPO}/releases/{release_id}':
+                    draft_id_gets.append(path)
+            return original_get(path, **kwargs)
+
+        api.get = get
+        self.assertEqual(self.cut(api, 'publish'), 0)
+        release_id = api.releases[VERSION]['id']
+        self.assertEqual(draft_id_gets, [f'/repos/{REPO}/releases/{release_id}'])
+
+    def test_draft_verification_requires_release_id(self):
+        with self.assertRaisesRegex(ValueError, 'draft verification needs the release id'):
+            c.verify_published(self.api(), REPO, VERSION, MERGE, self.manifest,
+                               draft_ok=True, repo_root=self.root)
+
+    def test_draft_verification_checks_release_identity(self):
+        for field, value, error in (
+                ('id', 'wrong-id', 'draft release id mismatch'),
+                ('tag_name', 'v9.9.9', 'draft release tag mismatch'),
+                ('draft', False, 'draft release is not a draft')):
+            with self.subTest(field=field):
+                api = self.api()
+                release = api.post(f'/repos/{REPO}/releases',
+                                   {'tag_name': VERSION, 'draft': True, 'prerelease': False})
+                mismatched = dict(release, **{field: value})
+                with patch.object(api, 'get', return_value=mismatched), self.assertRaisesRegex(ValueError, error):
+                    c.verify_published(api, REPO, VERSION, MERGE, self.manifest,
+                                       draft_ok=True, release_id=release['id'], repo_root=self.root)
 
     def test_publish_refuses_when_the_registry_anchor_is_missing(self):
         registry = e.load_json(self.root / 'runtimes/templates/APPROVALS.json')
